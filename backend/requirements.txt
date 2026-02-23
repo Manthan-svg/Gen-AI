@@ -9,6 +9,5 @@ uvicorn==0.30.6
 pypdf==4.3.1
 python-dotenv==1.0.0
 python-multipart==0.0.9
-sentence-transformers==2.7.0
-chromadb==0.5.0
-pydantic==2.7.4
+sentence-transformers==3.0.0
+chromadb==0.5.23
