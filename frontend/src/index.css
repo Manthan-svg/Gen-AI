@@ -1,1 +1,15 @@
 @import "tailwindcss";
+
+/* Target the specific container class */
+.messagesBox {
+    overflow-y: auto; /* Ensure scrolling still works */
+    
+    /* Hide scrollbar for IE, Edge and Firefox */
+    -ms-overflow-style: none;  
+    scrollbar-width: none;  
+}
+
+/* Hide scrollbar for Chrome, Safari and Opera */
+.messagesBox::-webkit-scrollbar {
+    display: none;
+}

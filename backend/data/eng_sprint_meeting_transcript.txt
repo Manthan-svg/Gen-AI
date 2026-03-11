@@ -1,0 +1,47 @@
+Participants:
+
+Aravind (Tech Lead)
+
+Priya (Product Manager)
+
+Sam (Senior Developer)
+
+Transcript:
+
+Priya: Okay, let’s talk about the database migration. We need to move from the old legacy SQL to the new distributed system by Friday.
+
+Sam: Friday? That’s impossible. We haven't even finished the schema mapping for the user table.
+
+Aravind: I agree with Sam. But we also need to consider the cost. If we stay on SQL, we pay $5k a month. If we move, it's $2k.
+
+Priya: Exactly. So we move by Friday?
+
+Sam: Again, no. We can’t. The mapping isn't done.
+
+Aravind: Let's look at the mapping then. Sam, what’s the status?
+
+Sam: I just told you, it's not done. We need at least three more days for the mapping.
+
+Priya: (Sighs) Okay, so if we can't do it Friday, when can we do it?
+
+Aravind: Let’s talk about the cost again. $5k vs $2k. We really need to save that money.
+
+Sam: We are talking in circles. The cost doesn't matter if the data breaks during the move. We need the mapping finished first.
+
+Aravind: Okay, let’s focus. Priya, can we push the deadline to Tuesday?
+
+Priya: Fine, Tuesday. But Sam, I need you to finish the schema mapping by Thursday EOD so we can test.
+
+Sam: I’ll try, but I need the API documentation from the DevOps team first.
+
+Aravind: I’ll talk to DevOps. I’ll get you those docs by tomorrow morning.
+
+Priya: Great. So, the decision is: Migration moved to Tuesday. Sam does mapping by Thursday. Aravind gets docs by tomorrow.
+
+Sam: Wait, back to the cost... did we check if the $2k includes the backup storage?
+
+Aravind: Oh, good point. Let’s look at the pricing page again...
+
+(10 minutes of silence and page scrolling)
+
+Priya: Guys, we are losing time. We already decided. Let’s stop talking about the cost.
