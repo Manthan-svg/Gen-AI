@@ -38,6 +38,7 @@ class Supervisor:
                     "ingested_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }]
             )
+            
             self.engine._try_persist()
             print(f"✅ [SUCCESS] Meeting summary saved to ChromaDB.")
             return "Meeting Processed"

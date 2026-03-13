@@ -33,8 +33,8 @@ class ConflictAgent:
         
         chain = prompt | self.llm
         response = chain.invoke({
-            "existing":new_context_text,
-            "new_info":old_context_text
+            "new_info":new_context_text,
+            "existing":old_context_text
         })
         
         return response.content

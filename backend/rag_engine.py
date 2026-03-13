@@ -86,27 +86,12 @@ class DeepContextEngine:
         client = getattr(self.vector_db, "_client", None)
         if client is not None and hasattr(client, "persist"):
             client.persist()
+            
 
     def get_answer(self, user_question: str, user_dept: str, chat_history: List = None):
         # Ensure this process sees newly ingested docs
         self._reload_vector_db()
         safe_history = self._normalize_chat_history(chat_history)
-        # 1. Manual Retrieval with Scores (Already in your code)
-        docs_with_scores = self.vector_db.similarity_search_with_score(
-            user_question,
-            k=5,
-            filter={"department": user_dept}    
-        )
-        
-        # 2. Filter for quality (Already in your code)
-        valid_docs = [doc for doc, score in docs_with_scores if score < 3.2]
-
-        if not valid_docs:
-            return {
-                "answer": "I'm sorry, I couldn't find any information in the documents regarding your question.",
-                "sources": []
-            }
-
         # 3. Handle Contextualization (Stand-alone question logic)
         contextualize_q_system_prompt = (
             "Given a chat history and the latest user question, "
@@ -126,18 +111,60 @@ class DeepContextEngine:
         })
         standalone_q = standalone_q_response.content
 
+        # 1. Manual Retrieval with Scores using standalone question
+        docs_with_scores = self.vector_db.similarity_search_with_score(
+            standalone_q,
+            k=5,
+            filter={"department": user_dept}
+        )
+        
+        # 2. Filter for quality (Chroma returns distance: lower = better)
+        scored = []
+        for doc, score in docs_with_scores:
+            sim = 1.0 / (1.0 + float(score))
+            scored.append((doc, sim))
+
+        q = user_question.lower()
+        wants_meeting = any(k in q for k in ["meeting", "transcript", "minutes", "summary"])
+
+        def _is_meeting_doc(d):
+            t = (d.metadata.get("type") or "").lower()
+            src = (d.metadata.get("source_name") or "").lower()
+            return t == "meeting_summary" or "meeting" in src or "transcript" in src
+
+        meeting_scored = [(d, s) for d, s in scored if _is_meeting_doc(d)]
+        non_meeting_scored = [(d, s) for d, s in scored if not _is_meeting_doc(d)]
+
+        pool = meeting_scored if wants_meeting and meeting_scored else non_meeting_scored or scored
+
+        best_sim = max(s for _, s in pool) if pool else 0
+        min_sim = max(0.35, best_sim * 0.75)
+        filtered = [(doc, sim) for doc, sim in pool if sim >= min_sim]
+        if not filtered:
+            filtered = sorted(pool, key=lambda x: x[1], reverse=True)[:3]
+
+        # Keep at most 3 sources, favoring highest similarity
+        valid_docs = [d for d, _ in sorted(filtered, key=lambda x: x[1], reverse=True)[:3]]
+
+        if not valid_docs:
+            return {
+                "answer": "I'm sorry, I couldn't find any information in the documents regarding your question.",
+                "sources": []
+            }
+
         # 4. Use the valid_docs DIRECTLY in the answer chain
         system_prompt = (
             "You are a Corporate Integrity AI. Use the provided context to answer. "
             "STRICT RULE: Do not mention 'Source: None' or try to list sources in your text. "
             "The system UI will handle citations automatically. "
-            "Answer ONLY based on the facts provided. If unsure, say you don't know."
+            "Answer ONLY based on the context provided. If unsure, say you don't know."
+            "Avoid statements like 'That's correct' or similar like that. "
+            "Always give response according to the user question."
             "\n\nContext: {context}"
         )
         
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
-            MessagesPlaceholder(variable_name="chat_history"),
             ("human", "{input}")
         ])
         
@@ -147,9 +174,10 @@ class DeepContextEngine:
         # Notice we are NOT using rag_chain.invoke()
         answer = question_answer_chain.invoke({
             "input": standalone_q,
-            "chat_history": safe_history,
             "context": valid_docs # This ensures only filtered docs are used!
         })
+        if hasattr(answer, "content"):
+            answer = answer.content
         
         # 5. Build Sources from valid_docs
         sources = []
@@ -164,5 +192,3 @@ class DeepContextEngine:
             "answer": answer,
             "sources": sources
         }
-
-    
