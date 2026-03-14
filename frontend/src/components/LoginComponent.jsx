@@ -19,6 +19,7 @@ function LoginComponent({loading }) {
     'Sales',
     'Support',
     'SDE',
+    'Workstation',
   ];
 
   const handleChange = (e) => {

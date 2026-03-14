@@ -19,9 +19,7 @@ function normalizeHistoryPayload(payload) {
       if (Array.isArray(item) && item.length >= 2) {
         return { 
           role: item[0], 
-          content: item[1],
-          // Check if your backend is sending sources as the 3rd element
-          sources: item[2] || [] 
+          content: item[1]
         };
       }
       return null;
@@ -50,12 +48,12 @@ export default function ChatWindow({ user }) {
 
         try {
           const res = await api.post(`/get-history/${sessionId}`);
+          console.log(res);
           const normalized = normalizeHistoryPayload(res?.data);
           setMessages(
             normalized.map((m) => ({
               role: m.role,
-              content: m.content,
-              sources:m.sources
+              content: m.content
             }))
           );
         } catch {
@@ -110,8 +108,7 @@ export default function ChatWindow({ user }) {
         
         setMessages(prev => [...prev, {
           role: 'ai',
-          content: res.data.answer,
-          sources: res.data.sources
+          content: res.data.answer
         }]);
 
         touchChatSession(username, effectiveSessionId, {
@@ -141,21 +138,6 @@ export default function ChatWindow({ user }) {
               <div className={`max-w-[80%] rounded-2xl p-4 ${m.role === 'human' ? 'bg-blue-600 text-white' : 'bg-slate-800 border border-slate-700 text-slate-200'}`}>
                 <p className="text-sm leading-relaxed">{m.content}</p>
                 
-                {m.sources && m.sources.length > 0 && (
-                  <div className="mt-4 pt-3 border-t border-slate-700 flex flex-wrap gap-2">
-                    {m.sources.map((s, idx) => (
-                      <div key={idx} className="group relative">
-                          <span className="text-[10px] bg-slate-900 px-2 py-1 rounded border border-slate-600 cursor-help">
-                            📄 {s.source} (p. {s.page})
-                          </span>
-                          {/* Hover Tooltip for Content Preview */}
-                          <div className="absolute bottom-full mb-2 hidden group-hover:block w-64 p-2 bg-black text-[10px] rounded shadow-xl border border-slate-700 z-50">
-                            {s.content_preview}
-                          </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
             </div>
           ))}

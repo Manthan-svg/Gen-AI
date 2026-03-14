@@ -17,18 +17,21 @@ load_dotenv()
 
 class DeepContextEngine:
     def __init__(self):
+        import chromadb
         self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
         
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        self.db_path = os.path.join(current_dir,"chroma_db")
+        self.db_path = os.path.join(current_dir, "chroma_db")
         
+        # ✅ Use PersistentClient directly from the start
+        client = chromadb.PersistentClient(path=self.db_path)
         self.vector_db = Chroma(
-            persist_directory=self.db_path,
+            client=client,
             embedding_function=self.embeddings
         )
-
+        
         self.llm = ChatGroq(
-            temperature=0, 
+            temperature=0,
             model_name="llama-3.1-8b-instant",
             groq_api_key=os.getenv("GROQ_API_KEY")
         )
@@ -60,21 +63,16 @@ class DeepContextEngine:
     def _normalize_chat_history(self, chat_history: List):
         if not chat_history:
             return []
-        normalized = []
-        for item in chat_history:
-            # Accept (role, content) or (role, content, sources)
-            if isinstance(item, (list, tuple)) and len(item) >= 2:
-                normalized.append((item[0], item[1]))
-                continue
-            # Accept {"role": "...", "content": "..."}
-            if isinstance(item, dict) and "role" in item and "content" in item:
-                normalized.append((item["role"], item["content"]))
-        return normalized
+        return [item for item in chat_history[-6:]]
     # Step 2 - Answer question from stored knowledge
     def _reload_vector_db(self):
-        # Reopen the persistent collection so this process sees new ingestions
+        import chromadb
+        
+        # ✅ Create a brand new chromadb client — no cache, reads fresh from disk
+        fresh_client = chromadb.PersistentClient(path=self.db_path)
+        
         self.vector_db = Chroma(
-            persist_directory=self.db_path,
+            client=fresh_client,
             embedding_function=self.embeddings
         )
 
@@ -86,17 +84,33 @@ class DeepContextEngine:
         client = getattr(self.vector_db, "_client", None)
         if client is not None and hasattr(client, "persist"):
             client.persist()
-            
 
     def get_answer(self, user_question: str, user_dept: str, chat_history: List = None):
         # Ensure this process sees newly ingested docs
         self._reload_vector_db()
         safe_history = self._normalize_chat_history(chat_history)
-        # 3. Handle Contextualization (Stand-alone question logic)
-        contextualize_q_system_prompt = (
-            "Given a chat history and the latest user question, "
-            "formulate a standalone question. Do NOT answer it."
+        # 1. Manual Retrieval with Scores (Already in your code)
+        docs_with_scores = self.vector_db.similarity_search_with_score(
+            user_question,
+            k=5,
+            filter={"department": user_dept}    
         )
+
+        # 2. Filter for quality (Already in your code)
+        valid_docs = [doc for doc, score in docs_with_scores if score < 3.2]
+        
+
+        if not valid_docs:
+            return {
+                "answer": "I'm sorry, I couldn't find any information in the documents regarding your question."
+            }
+
+        contextualize_q_system_prompt = """
+You are a helpful assistant that turns the latest user question into a standalone question.
+Use ONLY the latest user message. Ignore all previous bad or irrelevant messages.
+Do NOT add any extra text, explanations, or prefixes like "Question:".
+Just return the clean standalone question.
+"""
         contextualize_q_prompt = ChatPromptTemplate.from_messages([
             ("system", contextualize_q_system_prompt),
             MessagesPlaceholder(variable_name="chat_history"),
@@ -109,62 +123,24 @@ class DeepContextEngine:
             "input": user_question, 
             "chat_history": safe_history
         })
-        standalone_q = standalone_q_response.content
-
-        # 1. Manual Retrieval with Scores using standalone question
-        docs_with_scores = self.vector_db.similarity_search_with_score(
-            standalone_q,
-            k=5,
-            filter={"department": user_dept}
-        )
         
-        # 2. Filter for quality (Chroma returns distance: lower = better)
-        scored = []
-        for doc, score in docs_with_scores:
-            sim = 1.0 / (1.0 + float(score))
-            scored.append((doc, sim))
-
-        q = user_question.lower()
-        wants_meeting = any(k in q for k in ["meeting", "transcript", "minutes", "summary"])
-
-        def _is_meeting_doc(d):
-            t = (d.metadata.get("type") or "").lower()
-            src = (d.metadata.get("source_name") or "").lower()
-            return t == "meeting_summary" or "meeting" in src or "transcript" in src
-
-        meeting_scored = [(d, s) for d, s in scored if _is_meeting_doc(d)]
-        non_meeting_scored = [(d, s) for d, s in scored if not _is_meeting_doc(d)]
-
-        pool = meeting_scored if wants_meeting and meeting_scored else non_meeting_scored or scored
-
-        best_sim = max(s for _, s in pool) if pool else 0
-        min_sim = max(0.35, best_sim * 0.75)
-        filtered = [(doc, sim) for doc, sim in pool if sim >= min_sim]
-        if not filtered:
-            filtered = sorted(pool, key=lambda x: x[1], reverse=True)[:3]
-
-        # Keep at most 3 sources, favoring highest similarity
-        valid_docs = [d for d, _ in sorted(filtered, key=lambda x: x[1], reverse=True)[:3]]
-
-        if not valid_docs:
-            return {
-                "answer": "I'm sorry, I couldn't find any information in the documents regarding your question.",
-                "sources": []
-            }
+        standalone_q = standalone_q_response.content.strip()
+        if len(standalone_q) < 10 or "Question:" in standalone_q or "omerang" in standalone_q.lower():
+            standalone_q = user_question  # fallback to original question
+        standalone_q = standalone_q_response.content
 
         # 4. Use the valid_docs DIRECTLY in the answer chain
         system_prompt = (
             "You are a Corporate Integrity AI. Use the provided context to answer. "
             "STRICT RULE: Do not mention 'Source: None' or try to list sources in your text. "
             "The system UI will handle citations automatically. "
-            "Answer ONLY based on the context provided. If unsure, say you don't know."
-            "Avoid statements like 'That's correct' or similar like that. "
-            "Always give response according to the user question."
+            "Answer ONLY based on the context provided. Give proper answer to the user question . If unsure, say you don't know."
             "\n\nContext: {context}"
         )
         
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
+            MessagesPlaceholder(variable_name="chat_history"),
             ("human", "{input}")
         ])
         
@@ -174,21 +150,10 @@ class DeepContextEngine:
         # Notice we are NOT using rag_chain.invoke()
         answer = question_answer_chain.invoke({
             "input": standalone_q,
+            "chat_history": safe_history,
             "context": valid_docs # This ensures only filtered docs are used!
         })
-        if hasattr(answer, "content"):
-            answer = answer.content
-        
-        # 5. Build Sources from valid_docs
-        sources = []
-        for doc in valid_docs:
-            sources.append({
-                "source": doc.metadata.get("source_name", "Unknown"),
-                "page": doc.metadata.get("page", "N/A"),
-                "content_preview": doc.page_content[:100] + "...."
-            })
             
         return {
-            "answer": answer,
-            "sources": sources
+            "answer": answer
         }

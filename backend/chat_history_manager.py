@@ -1,45 +1,41 @@
-import json
+import os
 import sqlite3
 
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
+
 class ChatHistroyManager:
-    def save_messages(self, sessionId: str, role: str, content: str, sources=None):
-        conn = sqlite3.connect("users.db")
+    def save_messages(self, sessionId: str, role: str, content: str):
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        # Convert sources list to a JSON string for storage
-        sources_json = json.dumps(sources) if sources else "[]"
-        
         cursor.execute(
-            "INSERT INTO chat_history (session_id, role, content, sources) VALUES (?, ?, ?, ?)",
-            (sessionId, role, content, sources_json)
+            "INSERT INTO chat_history (session_id, role, content) VALUES (?, ?, ?)",
+            (sessionId, role, content,)
         )
         conn.commit()
         conn.close()
         
     def get_history(self, sessionId: str, limit=20):
-        conn = sqlite3.connect("users.db")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        # Retrieve the sources column too
         cursor.execute(
-            "SELECT role, content, sources FROM chat_history WHERE session_id = ? ORDER BY timestamp ASC LIMIT ?",
-            (sessionId, limit)
+            "SELECT role, content FROM chat_history WHERE session_id = ? ORDER BY timestamp ASC LIMIT ?",
+            (sessionId, limit,)
         )
         
         result = cursor.fetchall()
         conn.close()
         
-        # Return a 3-element tuple: (role, content, sources_list)
+        # Return a 2-element tuple: (role, content)
         history = []
-        for role, content, sources_json in result:
-            # Convert the JSON string back into a Python list
-            sources_list = json.loads(sources_json) if sources_json else []
-            history.append((role, content, sources_list))
+        for role, content in result:
+            history.append((role, content))
             
         return history
     
     def deleteChatBySession(self,sessionId:str):
-        conn = sqlite3.connect("users.db")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
         cursor.execute(

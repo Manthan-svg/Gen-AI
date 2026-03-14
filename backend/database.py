@@ -20,7 +20,6 @@ def initDB():
                 session_id TEXT,
                 role TEXT,
                 content TEXT,
-                sources TEXT, 
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )            
         ''')
@@ -33,8 +32,6 @@ def initDB():
         return {"message":e}
     
 
-    
-    
     
     
 

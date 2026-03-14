@@ -72,6 +72,8 @@ class DataIngestor:
                 raw_docs = loader.load()   
                 total_text = "".join([doc.page_content for doc in raw_docs]).strip()
                 
+                print(total_text)
+                
                 if len(total_text) < 50:
                     print(f"⚠️ Scanned PDF detected. Processing pages sequentially to save RAM...")
                     
@@ -90,6 +92,7 @@ class DataIngestor:
                 else:
                     print(f"📄 Text-based PDF detected. Using fast extraction.")
                     final_docs = raw_docs
+                    print(final_docs)
             elif ext in ['.txt', '.md']:
                 loader = TextLoader(filePath) if ext == '.txt' else UnstructuredMarkdownLoader(filePath)
                 final_docs = loader.load()

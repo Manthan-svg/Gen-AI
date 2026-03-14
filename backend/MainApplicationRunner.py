@@ -89,6 +89,7 @@ def upload_docs(background_tasks:BackgroundTasks ,file:UploadFile = File(...),us
         }
         
     except Exception as e:  
+        print(e)
         raise HTTPException(status_code=500,detail=str(e))
     
 
@@ -147,24 +148,19 @@ def get_answer(question: UserRequest, user_dept: str = Depends(get_current_user_
     # Save Human message normally
     history_manager.save_messages(question.sessionId, "human", question.question)
     
-    # RUTHLESS FIX: Save AI message WITH sources
-    # We pass the sources list as an extra argument
     history_manager.save_messages(
         question.sessionId, 
         "ai", 
-        result["answer"], 
-        sources=result["sources"]
+        result["answer"]
     )
     
     return {
-        "answer": result["answer"],
-        "sources": result["sources"],
+        "answer": result["answer"]
     }
      
 @app.post("/get-history/{sessionId}")
 async def getAllChatHistory(sessionId:str):
     chatHistory = history_manager.get_history(sessionId)
-    
     if len(chatHistory) > 0:
         return {
             "message":"Successfully Retrived Chat History.",
@@ -187,6 +183,7 @@ async def deleteChatBySessionId(sessionId:str):
     
 @app.post("/slack/events")
 async def slack_events(request: Request):
+    
     data = await request.json()
 
     if "challenge" in data:
@@ -232,7 +229,6 @@ async def slack_events(request: Request):
                     slack_token=SLACK_BOT_TOKEN
                 )
        
-
 
 
 

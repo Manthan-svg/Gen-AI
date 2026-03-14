@@ -19,6 +19,7 @@ function SignupComponent({ loading }) {
     'Sales',
     'Support',
     'SDE',
+    'Workstation',
   ];
 
   const [submitting, setSubmitting] = useState(false);

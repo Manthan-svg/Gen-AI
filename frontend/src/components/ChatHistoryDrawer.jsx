@@ -116,7 +116,6 @@ export default function ChatHistoryDrawer({
     if (!window.confirm('Delete this chat?')) return;
     try {
       const response = await api.post(`/delete-chat/${sessionId}`);
-      console.log(response);
 
       // Remove the deleted chat from local storage (chatSessions)
       const username = user?.username ?? null;
@@ -128,11 +127,8 @@ export default function ChatHistoryDrawer({
         const filtered = sessions.filter(s => s.sessionId !== sessionId);
         localStorage.setItem(key, JSON.stringify(filtered));
 
-        // Remove chat history for this session from localStorage
-        localStorage.removeItem(`history_${sessionId}`);
-
         // If the deleted chat was active, clear the activeSessionId
-        const activeSessionKey = `activeSessionId_${username}`;
+        const activeSessionKey = `dc_active_chat_${username}`;
         if (localStorage.getItem(activeSessionKey) === sessionId) {
           localStorage.removeItem(activeSessionKey);
         }

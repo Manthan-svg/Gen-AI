@@ -23,6 +23,8 @@ class Supervisor:
             # Use your ingestor to get the full text (not chunks)
             # Assuming ingestion_documents returns a list of LangChain Documents
             docs = self.ingest.ingestion_documents(file_path, user_dept)
+            if not docs:
+                raise RuntimeError(f"No content extracted from meeting file: {file_name}")
             full_text = " ".join([d.page_content for d in docs])
             
             # Generate the Golden Summary (JSON format is best)
@@ -35,7 +37,9 @@ class Supervisor:
                     "department": user_dept, 
                     "type": "meeting_summary", 
                     "source_name": file_name,
-                    "ingested_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    "ingested_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "status": "verified",          # ✅ Add this
+                    "conflict_reason": "N/A"       
                 }]
             )
             
@@ -47,7 +51,8 @@ class Supervisor:
         else:
             print(f"🚀 [MODE: AUDIT] Starting High-Speed Audit: {file_name}")
             new_chunks = self.ingest.ingestion_documents(file_path, user_dept)
-            if not new_chunks: return None 
+            if not new_chunks:
+                raise RuntimeError(f"No content extracted from file: {file_name}")
 
             batch_size = 20  
             processed_chunks = []

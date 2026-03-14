@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
@@ -12,7 +13,8 @@ class UserAuth(BaseModel):
     
     
 def getDBConnection():
-    conn = sqlite3.connect("users.db")
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
+    conn = sqlite3.connect(db_path)
     return conn
     
 @router.post("/signup")
