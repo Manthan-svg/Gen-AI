@@ -50,6 +50,7 @@ export default function ChatWindow({ user }) {
           const res = await api.post(`/get-history/${sessionId}`);
           console.log(res);
           const normalized = normalizeHistoryPayload(res?.data);
+          console.log(normalized);
           setMessages(
             normalized.map((m) => ({
               role: m.role,
@@ -137,7 +138,6 @@ export default function ChatWindow({ user }) {
             <div key={i} className={`flex ${m.role === 'human' ? 'justify-end' : 'justify-start'}`}>
               <div className={`max-w-[80%] rounded-2xl p-4 ${m.role === 'human' ? 'bg-blue-600 text-white' : 'bg-slate-800 border border-slate-700 text-slate-200'}`}>
                 <p className="text-sm leading-relaxed">{m.content}</p>
-                
               </div>
             </div>
           ))}

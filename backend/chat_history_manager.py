@@ -15,21 +15,21 @@ class ChatHistroyManager:
         conn.commit()
         conn.close()
         
-    def get_history(self, sessionId: str, limit=20):
+    def get_history(self, sessionId: str, limit=200):
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
         cursor.execute(
-            "SELECT role, content FROM chat_history WHERE session_id = ? ORDER BY timestamp ASC LIMIT ?",
+            "SELECT role, content FROM chat_history WHERE session_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?",
             (sessionId, limit,)
         )
         
-        result = cursor.fetchall()
+        result = cursor.fetchall()  
         conn.close()
         
         # Return a 2-element tuple: (role, content)
         history = []
-        for role, content in result:
+        for role, content in reversed(result):
             history.append((role, content))
             
         return history

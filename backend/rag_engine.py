@@ -1,7 +1,9 @@
 import os
+import re
 from typing import List
 from langchain_chroma import Chroma
 import chromadb
+from chromadb.config import Settings
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
@@ -26,6 +28,22 @@ def _is_garbage(text: str) -> bool:
     for pattern in _GARBAGE_PATTERNS:
         if pattern.lower() in text.lower():
             return True
+    # Path-like or repo file spam (common garbage mode)
+    slash_count = text.count("/") + text.count("\\")
+    if len(text) > 200 and slash_count > 4:
+        return True
+    # Highly repetitive token soup
+    tokens = re.findall(r"[A-Za-z0-9_.-]+", text)
+    if len(tokens) >= 30:
+        unique_ratio = len(set(tokens)) / len(tokens)
+        if unique_ratio < 0.35:
+            return True
+        most_common_ratio = max(tokens.count(t) for t in set(tokens)) / len(tokens)
+        if most_common_ratio > 0.2:
+            return True
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) >= 8 and (len(set(lines)) / len(lines)) < 0.4:
+        return True
     return False
 
 
@@ -54,10 +72,15 @@ class DeepContextEngine:
 
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.db_path = os.path.join(current_dir, "chroma_db")
+        self.collection_name = "deepcontext"
 
-        client = chromadb.PersistentClient(path=self.db_path)
+        client = chromadb.PersistentClient(
+            path=self.db_path,
+            settings=Settings(anonymized_telemetry=False)
+        )
         self.vector_db = Chroma(
             client=client,
+            collection_name=self.collection_name,
             embedding_function=self.embeddings
         )
 
@@ -90,9 +113,13 @@ class DeepContextEngine:
 
     def _reload_vector_db(self):
         """Creates a fresh Chroma client to see newly ingested docs."""
-        fresh_client = chromadb.PersistentClient(path=self.db_path)
+        fresh_client = chromadb.PersistentClient(
+            path=self.db_path,
+            settings=Settings(anonymized_telemetry=False)
+        )
         self.vector_db = Chroma(
             client=fresh_client,
+            collection_name=self.collection_name,
             embedding_function=self.embeddings
         )
 
@@ -134,6 +161,12 @@ class DeepContextEngine:
             })
             candidate = response.content.strip()
 
+            # Hard sanity checks for runaway/garbage rewrites
+            if len(candidate) > 220:
+                return user_question
+            if (candidate.count("/") + candidate.count("\\")) > 4:
+                return user_question
+
             # ✅ Hard validation: if output looks wrong, fall back to original
             if _is_garbage(candidate):
                 print(f"⚠️ Garbage standalone_q detected, falling back. Got: {candidate[:80]}")
@@ -159,6 +192,7 @@ class DeepContextEngine:
             k=5,
             filter={"department": user_dept}
         )
+        print(docs_with_scores)
 
         # Step 4: Filter by distance score (lower = better in Chroma)
         valid_docs = [doc for doc, score in docs_with_scores if score < 3.2]
@@ -176,6 +210,7 @@ class DeepContextEngine:
         system_prompt = (
             "You are a Corporate Integrity AI. Answer the user's question using ONLY "
             "the provided context. Do not mention sources. Do not make up information. "
+            "Check out the provided context properly , analyze it . Don't say I don't know even if the context is present . Take your time , but answer the question properly. "
             "If the answer is not in the context, say you don't know.\n\nContext: {context}"
         )
 

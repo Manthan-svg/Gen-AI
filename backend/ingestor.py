@@ -24,6 +24,12 @@ class DataIngestor:
         
         pil_image.save(buffered,format="JPEG")
         return base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+    def _clean_doc_text(self, text: str) -> str:
+        if not text:
+            return ""
+        # Remove embedded nulls from PDF extraction (breaks embeddings/LLM)
+        return text.replace("\x00", "")
     
     def audit_image(self, base64img):
         # We define the content as a single list of dictionaries
@@ -98,6 +104,10 @@ class DataIngestor:
                 final_docs = loader.load()
             else:
                 raise ValueError(f"Unsupported file type: {ext}")
+
+            # Clean extracted text before chunking to avoid garbage tokens
+            for doc in final_docs:
+                doc.page_content = self._clean_doc_text(doc.page_content)
 
             chunks = self.spliters.split_documents(final_docs)
 
