@@ -15,6 +15,7 @@ class Supervisor:
         
     def supervisor(self, file_path: str, user_dept: str):
         file_name = os.path.basename(file_path).lower()
+        vector_db = self.engine.get_vector_db(refresh=True)
         
         # --- BRANCH 1: MEETING FATIGUE LOGIC ---
         if "meeting" in file_name or "transcript" in file_name:
@@ -31,7 +32,7 @@ class Supervisor:
             summary_report = self.meeting_ai.analyze_transcript_text(full_text)
             
             # Store the SUMMARY as a single high-value record
-            self.engine.vector_db.add_texts(
+            vector_db.add_texts(
                 texts=[summary_report],
                 metadatas=[{
                     "department": user_dept, 
@@ -62,7 +63,7 @@ class Supervisor:
                 batch_text = " ".join([c.page_content for c in current_batch])
 
                 # Use similarity search with score to ensure we only check relevant docs
-                docs_with_scores = self.engine.vector_db.similarity_search_with_score(
+                docs_with_scores = vector_db.similarity_search_with_score(
                     batch_text, k=1, filter={"department": user_dept}
                 )
                 
@@ -89,6 +90,6 @@ class Supervisor:
                     })
                     processed_chunks.append(chunk)
 
-            self.engine.vector_db.add_documents(processed_chunks)
+            vector_db.add_documents(processed_chunks)
             self.engine._try_persist()
             return processed_chunks

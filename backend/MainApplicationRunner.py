@@ -115,7 +115,8 @@ async def get_job_status(job_id: str):
 @app.get("/retriveAllDocuments")
 def getAllDocuments(user_dept: str = Depends(get_current_user_dept)):
     try:
-        data = engine.vector_db.get(where={"department":user_dept})
+        vector_db = engine.get_vector_db(refresh=True)
+        data = vector_db.get(where={"department":user_dept})
         
         docs = []
         seen = set()
@@ -140,23 +141,36 @@ def getAllDocuments(user_dept: str = Depends(get_current_user_dept)):
         raise HTTPException(status_code=500, detail=str(e)) 
 
 
+# ─── AFTER ───────────────────────────────────────────────────────────────────
+_SAVE_SKIP_PHRASES = [
+    "i don't know", "i do not know", "no information",
+    "not available", "no relevant", "cannot find",
+    "not mentioned", "not provided", "no details",
+    "couldn't find any relevant"
+]
+
 @app.post("/get-answer")
 def get_answer(question: UserRequest, user_dept: str = Depends(get_current_user_dept)):
     history = history_manager.get_history(question.sessionId)
     result = engine.get_answer(question.question, user_dept, history)
-    
-    # Save Human message normally
+
+    answer_text = result["answer"]
+    was_retrieved = result.get("retrieved", True)
+
+    # Always save the human message
     history_manager.save_messages(question.sessionId, "human", question.question)
-    
-    history_manager.save_messages(
-        question.sessionId, 
-        "ai", 
-        result["answer"]
-    )
-    
-    return {
-        "answer": result["answer"]
-    }
+
+    # Only save AI answer to history if it's meaningful.
+    # A "I don't know" when docs WERE retrieved is a model failure — don't poison history.
+    answer_lower = answer_text.lower().strip()
+    is_bad_answer = any(phrase in answer_lower for phrase in _SAVE_SKIP_PHRASES)
+
+    if not (is_bad_answer and was_retrieved):
+        history_manager.save_messages(question.sessionId, "ai", answer_text)
+    else:
+        print(f"⚠️ Skipping history save — model returned weak answer despite retrieved docs.")
+
+    return {"answer": answer_text}
      
 @app.post("/get-history/{sessionId}")
 async def getAllChatHistory(sessionId:str):
@@ -229,7 +243,6 @@ async def slack_events(request: Request):
                     slack_token=SLACK_BOT_TOKEN
                 )
        
-
 
 
 

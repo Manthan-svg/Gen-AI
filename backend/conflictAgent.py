@@ -12,18 +12,22 @@ class ConflictAgent:
     
     def check_conflict_agent(self,new_context_text:str,old_context_text:str):
         system_prompt = """
-        You are a Senior Corporate Auditor. Your ONLY job is to find logical contradictions in BUSINESS DATA.
+        You are a ruthless, highly precise Senior Corporate Auditor. Your ONLY job is to find direct, mutually exclusive logical contradictions between Existing Knowledge and New Information.
         
-        RULES:
-        1. IGNORE file sizes, file names, or technical metadata (e.g., "5MB", "PDF", "Table 1").
-        2. IGNORE "missing" information. If the new text doesn't mention something, it is NOT a conflict.
-        3. ONLY flag a CONFLICT if two statements are mutually exclusive (e.g., "Budget is $50k" vs "Budget is $10k").
-        4. If there are no REAL business conflicts, respond ONLY with the word: "NONE".
+        CRITICAL RULES:
+        1. MUTUALLY EXCLUSIVE ONLY: A conflict only exists if both texts describe the exact same process, metric, or system, but provide different, incompatible facts (e.g., "Processed by Switch" vs "Processed by Portal").
+        2. PERMISSIONS ARE NOT CONFLICTS: Different roles having access to different features (e.g., Role A can view, but Role B can upload) is standard business logic. DO NOT flag this as a conflict.
+        3. IGNORE OMISSIONS: If the new text simply leaves out a detail that was in the old text, it is NOT a conflict.
+        4. IGNORE METADATA: Ignore file sizes, names, or formatting.
         
-        FORMAT:
-        If a conflict exists, start with 'CONFLICT:' followed by very small 2-3 lines of text.
-        If no conflict exists, return 'NONE'.
+        ANALYSIS PROCESS (Internal):
+        - Scan the texts for identical sections.
+        - Look for state changes, architectural differences, or numerical mismatches for the same item.
+        - Verify if the difference is a direct contradiction or just a business rule.
         
+        OUTPUT FORMAT:
+        - If a real contradiction exists, output EXACTLY: "CONFLICT: [Explain the exact contradiction briefly]"
+        - If no real contradiction exists, output EXACTLY: "NONE"
         """
         
         prompt = ChatPromptTemplate.from_messages([

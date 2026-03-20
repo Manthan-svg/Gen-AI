@@ -74,15 +74,7 @@ class DeepContextEngine:
         self.db_path = os.path.join(current_dir, "chroma_db")
         self.collection_name = "deepcontext"
 
-        client = chromadb.PersistentClient(
-            path=self.db_path,
-            settings=Settings(anonymized_telemetry=False)
-        )
-        self.vector_db = Chroma(
-            client=client,
-            collection_name=self.collection_name,
-            embedding_function=self.embeddings
-        )
+        self.vector_db = self._create_vector_db()
 
         self.llm = ChatGroq(
             temperature=0,
@@ -111,33 +103,38 @@ class DeepContextEngine:
 
         return result
 
-    def _reload_vector_db(self):
-        """Creates a fresh Chroma client to see newly ingested docs."""
+    def _create_vector_db(self):
+        """Create a fresh Chroma handle against the persistent collection."""
         fresh_client = chromadb.PersistentClient(
             path=self.db_path,
             settings=Settings(anonymized_telemetry=False)
         )
-        self.vector_db = Chroma(
+        return Chroma( 
             client=fresh_client,
             collection_name=self.collection_name,
             embedding_function=self.embeddings
         )
 
+    def _reload_vector_db(self):
+        """Refresh the collection handle so cross-process writes become visible."""
+        self.vector_db = self._create_vector_db()
+        return self.vector_db
+
+    def get_vector_db(self, refresh: bool = False):
+        if refresh or self.vector_db is None:
+            return self._reload_vector_db()
+        return self.vector_db
+
     def _try_persist(self):
-        if hasattr(self.vector_db, "persist"):
-            self.vector_db.persist()
+        vector_db = self.get_vector_db()
+        if hasattr(vector_db, "persist"):
+            vector_db.persist()
             return
-        client = getattr(self.vector_db, "_client", None)
+        client = getattr(vector_db, "_client", None)
         if client is not None and hasattr(client, "persist"):
             client.persist()
 
     def _get_standalone_question(self, user_question: str, safe_history: List) -> str:
-        """
-        Rewrites the user question as standalone ONLY when history exists.
-        If no history, skip the LLM call entirely — return original question.
-        Always falls back to original question if output looks like garbage.
-        """
-        # ✅ Skip contextualize step completely if there is no history
         if not safe_history:
             return user_question
 
@@ -167,7 +164,6 @@ class DeepContextEngine:
             if (candidate.count("/") + candidate.count("\\")) > 4:
                 return user_question
 
-            # ✅ Hard validation: if output looks wrong, fall back to original
             if _is_garbage(candidate):
                 print(f"⚠️ Garbage standalone_q detected, falling back. Got: {candidate[:80]}")
                 return user_question
@@ -180,26 +176,25 @@ class DeepContextEngine:
 
     def get_answer(self, user_question: str, user_dept: str, chat_history: List = None):
         # Step 1: Reload Chroma to pick up freshly ingested docs
-        self._reload_vector_db()
+        vector_db = self.get_vector_db(refresh=True)
 
         # Step 2: Convert raw history tuples → LangChain messages (filter garbage)
         safe_history = self._normalize_chat_history(chat_history)
 
         # Step 3: Retrieve relevant docs using the RAW user question
-        # (Always use original question for retrieval — not rewritten one)
-        docs_with_scores = self.vector_db.similarity_search_with_score(
+        docs_with_scores = vector_db.similarity_search_with_score(
             user_question,
             k=5,
             filter={"department": user_dept}
         )
         print(docs_with_scores)
-
         # Step 4: Filter by distance score (lower = better in Chroma)
         valid_docs = [doc for doc, score in docs_with_scores if score < 3.2]
 
         if not valid_docs:
             return {
-                "answer": "I'm sorry, I couldn't find any relevant information in the documents for your question."
+                "answer": "I'm sorry, I couldn't find any relevant information in the documents for your question.",
+                "retrieved": False
             }
 
         # Step 5: Get standalone question (safe, with fallback)
@@ -208,10 +203,18 @@ class DeepContextEngine:
 
         # Step 6: Answer using ONLY the retrieved docs — no chat history here
         system_prompt = (
-            "You are a Corporate Integrity AI. Answer the user's question using ONLY "
-            "the provided context. Do not mention sources. Do not make up information. "
-            "Check out the provided context properly , analyze it . Don't say I don't know even if the context is present . Take your time , but answer the question properly. "
-            "If the answer is not in the context, say you don't know.\n\nContext: {context}"
+            "You are a Corporate Knowledge Assistant. Your ONLY job is to answer the user's "
+            "question using the CONTEXT block below.\n\n"
+            "STRICT RULES:\n"
+            "1. Read the entire CONTEXT carefully before answering.\n"
+            "2. If the answer IS present in the CONTEXT — answer it directly and completely . Check the answer properly , then only answer the question. "
+            "Do NOT say 'I don't know' if the information exists in the CONTEXT.\n"
+            "3. Only say you don't know if the CONTEXT genuinely has no relevant information "
+            "after careful reading.\n"
+            "4. For list-type questions (participants, members, action items, decisions), "
+            "extract and list every item found in the CONTEXT.\n"
+            "5. Do not fabricate anything not in the CONTEXT.\n\n"
+            "CONTEXT:\n{context}"
         )
 
         prompt = ChatPromptTemplate.from_messages([
@@ -219,11 +222,33 @@ class DeepContextEngine:
             ("human", "{input}")
         ])
 
+        # ── Retry loop: up to 3 attempts if the model returns a bad "I don't know" ──
+        _DONT_KNOW_PHRASES = [
+            "i don't know", "i do not know", "no information",
+            "not available", "no relevant", "cannot find",
+            "not mentioned", "not provided", "no details"
+        ]
+
+        def _looks_like_dont_know(text: str) -> bool:
+            lowered = text.lower().strip()
+            return any(phrase in lowered for phrase in _DONT_KNOW_PHRASES)
+
         question_answer_chain = create_stuff_documents_chain(self.llm, prompt)
 
-        answer = question_answer_chain.invoke({
-            "input": standalone_q,
-            "context": valid_docs
-        })
+        answer_text = None
+        for attempt in range(3):
+            raw_answer = question_answer_chain.invoke({
+                "input": standalone_q,
+                "context": valid_docs
+            })
+            candidate = _extract_answer_text(raw_answer)
 
-        return {"answer": _extract_answer_text(answer)}
+            # If the model gave a real answer, accept it immediately
+            if not _looks_like_dont_know(candidate):
+                answer_text = candidate
+                break
+
+            print(f"⚠️ Attempt {attempt + 1}: LLM returned a weak answer despite valid docs. Retrying...")
+            answer_text = candidate  # keep last attempt as fallback
+
+        return {"answer": answer_text, "retrieved": True}

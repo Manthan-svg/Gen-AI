@@ -8,15 +8,19 @@ from pdf2image import convert_from_path
 from langchain.schema import Document
 from io import BytesIO
 import base64
-from langchain_community.document_loaders import PyPDFLoader, TextLoader, UnstructuredMarkdownLoader
+from dotenv import load_dotenv
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from PIL import Image
+
+load_dotenv()
 
 class DataIngestor:
     def __init__(self):
         self.spliters = RecursiveCharacterTextSplitter(chunk_size=3000, chunk_overlap=250)
         self.llm =ChatGroq( 
             temperature=0,
-            model_name="meta-llama/llama-4-scout-17b-16e-instruct"
+            model_name="meta-llama/llama-4-scout-17b-16e-instruct",
+            groq_api_key=os.getenv("GROQ_API_KEY")
         )
         
     def _convert_to_base64_(self,pil_image):
@@ -36,7 +40,10 @@ class DataIngestor:
         human_content = [
             {
                 "type": "text",
-                "text": "Please analyze this document image and extract all relevant text, tables, and signatures."
+                "text": (
+                    "This is a business document image. Extract the content in a retrieval-friendly format. "
+                    "Preserve exact wording where visible."
+                )
             },
             {
                 "type": "image_url",
@@ -47,7 +54,16 @@ class DataIngestor:
         ]
 
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "Act as a corporate auditor. Read this image. Extract all text. If there are tables or charts, describe them exactly. If there are signatures, note them."),
+            ("system",
+             "You are performing OCR for enterprise document retrieval.\n"
+             "Return plain text only.\n"
+             "Rules:\n"
+             "1. Extract all visible text as faithfully as possible.\n"
+             "2. Keep names, IDs, dates, amounts, headings, and labels exactly when readable.\n"
+             "3. If the image contains a table, rewrite it as lines with column labels.\n"
+             "4. If the image contains signatures or stamps, mention them in one short line.\n"
+             "5. Do not add commentary like 'this image appears to show'.\n"
+             "6. If some text is unreadable, write '[unreadable]'."),
             ("human", human_content) # This is now a 2-tuple: (role, list_content)
         ])
         
@@ -71,7 +87,14 @@ class DataIngestor:
         try:
             if ext in ['.jpg', '.jpeg', '.png']:
                 img = Image.open(filePath)
-                final_docs.append(Document(page_content=self.audit_image(self._convert_to_base64_(img)), metadata={"page": 1}))
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                extracted_text = self.audit_image(self._convert_to_base64_(img))
+                final_docs.append(Document(
+                    page_content=f"Document OCR extraction from image file {file_name}:\n{extracted_text}",
+                    metadata={"page": 1, "content_type": "image"}
+                ))
+                img.close()
 
             elif ext == '.pdf':   
                 loader = PyPDFLoader(filePath)   
@@ -100,8 +123,14 @@ class DataIngestor:
                     final_docs = raw_docs
                     print(final_docs)
             elif ext in ['.txt', '.md']:
-                loader = TextLoader(filePath) if ext == '.txt' else UnstructuredMarkdownLoader(filePath)
-                final_docs = loader.load()
+                try:
+                    loader = TextLoader(filePath,encoding="utf-8")
+                    final_docs = loader.load()
+                    
+                except UnicodeDecodeError:
+                    loader = TextLoader(filePath, encoding="latin-1")
+                    final_docs = loader.load()
+                        
             else:
                 raise ValueError(f"Unsupported file type: {ext}")
 
