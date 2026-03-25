@@ -14,3 +14,4 @@ chromadb==0.5.23
 flashrank==0.2.8
 neo4j==5.28.0
 langchain-neo4j==0.1.1
+rank-bm25==0.2.2

@@ -1,5 +1,7 @@
 import os
 import re
+import numpy as np
+from rank_bm25 import BM25Okapi
 from typing import List
 from langchain_chroma import Chroma
 import chromadb
@@ -10,8 +12,11 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain.schema import Document
 from dotenv import load_dotenv
 from ingestor import DataIngestor
+
+
 
 load_dotenv()
 
@@ -102,6 +107,71 @@ class DeepContextEngine:
                 result.append(AIMessage(content=content))
 
         return result
+    
+    def _hybrid_search(self, query: str, user_dept: str, k: int = 5) -> List[Document]:
+        """
+        Combines ChromaDB semantic search + BM25 lexical search
+        using Reciprocal Rank Fusion (RRF) to merge results.
+        """
+
+        # ── 1. Semantic Search (your existing ChromaDB) ──────────────────
+        semantic_results = self.vector_db.similarity_search_with_score(
+            query, k=10, filter={"department": user_dept}
+        )
+        # Lower score = better in Chroma (distance metric)
+        semantic_docs = [
+            (doc, score) for doc, score in semantic_results if score < 3.2
+        ]
+
+        # ── 2. Fetch All Dept Docs for BM25 ──────────────────────────────
+        all_dept_data = self.vector_db.get(where={"department": user_dept})
+        all_texts     = all_dept_data.get("documents", [])
+        all_metadatas = all_dept_data.get("metadatas", [])
+
+        if not all_texts:
+            print("⚠️ No docs for BM25, falling back to semantic only.")
+            return [doc for doc, _ in semantic_docs[:k]]
+
+        # ── 3. Build BM25 Index ───────────────────────────────────────────
+        tokenized_corpus = [text.lower().split() for text in all_texts]
+        bm25 = BM25Okapi(tokenized_corpus)
+
+        # ── 4. Score All Docs Against Query ──────────────────────────────
+        tokenized_query = query.lower().split()
+        bm25_scores     = bm25.get_scores(tokenized_query)
+        top_bm25_idx    = np.argsort(bm25_scores)[::-1][:10]
+
+        # ── 5. Reciprocal Rank Fusion (RRF) ──────────────────────────────
+        RRF_K      = 60          # standard constant
+        rrf_scores = {}           # doc_key → cumulative RRF score
+        doc_store  = {}           # doc_key → Document object
+
+        # Semantic results contribute to RRF
+        for rank, (doc, _) in enumerate(semantic_docs):
+            key = doc.page_content[:120]      # stable unique key per chunk
+            rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (RRF_K + rank + 1)
+            doc_store[key]  = doc
+
+        # BM25 results contribute to RRF
+        for rank, idx in enumerate(top_bm25_idx):
+            if bm25_scores[idx] <= 0:         # skip zero-score docs
+                continue
+            text = all_texts[idx]
+            meta = all_metadatas[idx] if idx < len(all_metadatas) else {}
+            key  = text[:120]
+            rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (RRF_K + rank + 1)
+            if key not in doc_store:
+                doc_store[key] = Document(page_content=text, metadata=meta)
+
+        # ── 6. Sort by RRF score descending, return top-k ────────────────
+        ranked_keys = sorted(rrf_scores, key=lambda x: rrf_scores[x], reverse=True)
+        final_docs  = [doc_store[key] for key in ranked_keys if key in doc_store]
+
+        # print(f"✅ Hybrid search → {len(semantic_docs)} semantic + "
+        #     f"{sum(1 for i in top_bm25_idx if bm25_scores[i] > 0)} BM25 "
+        #     f"→ {len(final_docs)} fused docs returned")
+        
+        return final_docs[:k]
 
     def _create_vector_db(self):
         """Create a fresh Chroma handle against the persistent collection."""
@@ -146,7 +216,6 @@ class DeepContextEngine:
 
         contextualize_q_prompt = ChatPromptTemplate.from_messages([
             ("system", contextualize_q_system_prompt),
-            MessagesPlaceholder(variable_name="chat_history"),
             ("human", "{input}")
         ])
 
@@ -156,6 +225,7 @@ class DeepContextEngine:
                 "input": user_question,
                 "chat_history": safe_history
             })
+            print(response)
             candidate = response.content.strip()
 
             # Hard sanity checks for runaway/garbage rewrites
@@ -181,16 +251,10 @@ class DeepContextEngine:
         # Step 2: Convert raw history tuples → LangChain messages (filter garbage)
         safe_history = self._normalize_chat_history(chat_history)
 
-        # Step 3: Retrieve relevant docs using the RAW user question
-        docs_with_scores = vector_db.similarity_search_with_score(
-            user_question,
-            k=5,
-            filter={"department": user_dept}
-        )
-        print(docs_with_scores)
-        # Step 4: Filter by distance score (lower = better in Chroma)
-        valid_docs = [doc for doc, score in docs_with_scores if score < 3.2]
-
+        valid_docs = self._hybrid_search(user_question,user_dept,k=5)
+        
+        print(valid_docs)
+        
         if not valid_docs:
             return {
                 "answer": "I'm sorry, I couldn't find any relevant information in the documents for your question.",
@@ -207,7 +271,7 @@ class DeepContextEngine:
             "question using the CONTEXT block below.\n\n"
             "STRICT RULES:\n"
             "1. Read the entire CONTEXT carefully before answering.\n"
-            "2. If the answer IS present in the CONTEXT — answer it directly and completely . Check the answer properly , then only answer the question. "
+            "2. If the answer IS present in the CONTEXT — answer it directly and completely."
             "Do NOT say 'I don't know' if the information exists in the CONTEXT.\n"
             "3. Only say you don't know if the CONTEXT genuinely has no relevant information "
             "after careful reading.\n"

@@ -101,8 +101,6 @@ class DataIngestor:
                 raw_docs = loader.load()   
                 total_text = "".join([doc.page_content for doc in raw_docs]).strip()
                 
-                print(total_text)
-                
                 if len(total_text) < 50:
                     print(f"⚠️ Scanned PDF detected. Processing pages sequentially to save RAM...")
                     
