@@ -6,7 +6,6 @@ import {
   createNewChatSession,
   ensureInitialChatSession,
   maybeSetChatTitleFromFirstMessage,
-  setActiveChatSessionId,
   touchChatSession,
 } from '../utils/chatSessions.util';
 
@@ -41,16 +40,13 @@ export default function ChatWindow({ user }) {
     const loadSession = useCallback(
       async (sessionId) => {
         if (!username || !sessionId) return;
-        setActiveChatSessionId(username, sessionId);
         setActiveSessionIdState(sessionId);
         setIsTyping(false);
         setInput('');
 
         try {
           const res = await api.post(`/get-history/${sessionId}`);
-          console.log(res);
           const normalized = normalizeHistoryPayload(res?.data);
-          console.log(normalized);
           setMessages(
             normalized.map((m) => ({
               role: m.role,
@@ -66,20 +62,26 @@ export default function ChatWindow({ user }) {
 
     useEffect(() => {
       if (!username) return;
-      const { activeSessionId: initialActive } = ensureInitialChatSession(username);
-      if (initialActive) loadSession(initialActive);
+      (async () => {
+        const { activeSessionId: initialActive } = await ensureInitialChatSession(username);
+        if (initialActive) {
+          await loadSession(initialActive);
+        }
+      })();
     }, [username, loadSession]);
 
     const startNewChat = useCallback(() => {
       if (!username) return;
-      const newSession = createNewChatSession(username);
-      setSessionsVersion((v) => v + 1);
-      setMessages([]);
-      setInput('');
-      setIsTyping(false);
-      if (newSession?.sessionId) {
-        setActiveSessionIdState(newSession.sessionId);
-      }
+      (async () => {
+        const newSession = await createNewChatSession(username);
+        setSessionsVersion((v) => v + 1);
+        setMessages([]);
+        setInput('');
+        setIsTyping(false);
+        if (newSession?.sessionId) {
+          setActiveSessionIdState(newSession.sessionId);
+        }
+      })();
     }, [username]);
   
     const sendMessage = async () => {
@@ -92,15 +94,13 @@ export default function ChatWindow({ user }) {
       setInput("");
       setIsTyping(true);
 
-      maybeSetChatTitleFromFirstMessage(username, effectiveSessionId, text);
-      touchChatSession(username, effectiveSessionId, {
-        lastMessageAt: new Date().toISOString(),
-        lastMessagePreview: text,
-      });
-      setSessionsVersion((v) => v + 1);
-  
       try {
-        console.log(effectiveSessionId);
+        await maybeSetChatTitleFromFirstMessage(effectiveSessionId, text);
+        await touchChatSession(effectiveSessionId, {
+          lastMessageAt: new Date().toISOString(),
+          lastMessagePreview: text,
+        });
+        setSessionsVersion((v) => v + 1);
 
         const res = await api.post('/get-answer', { 
           question: text, 
@@ -112,12 +112,20 @@ export default function ChatWindow({ user }) {
           content: res.data.answer
         }]);
 
-        touchChatSession(username, effectiveSessionId, {
+        await touchChatSession(effectiveSessionId, {
           lastMessageAt: new Date().toISOString(),
           lastMessagePreview: String(res?.data?.answer ?? '').trim() || text,
         });
         setSessionsVersion((v) => v + 1);
-      } catch (err) { /* Handle Error */ }
+      } catch (err) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'ai',
+            content: 'Something went wrong while fetching the answer.',
+          },
+        ]);
+      }
       setIsTyping(false);
     };
   

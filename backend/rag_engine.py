@@ -225,7 +225,6 @@ class DeepContextEngine:
                 "input": user_question,
                 "chat_history": safe_history
             })
-            print(response)
             candidate = response.content.strip()
 
             # Hard sanity checks for runaway/garbage rewrites
@@ -253,7 +252,7 @@ class DeepContextEngine:
 
         valid_docs = self._hybrid_search(user_question,user_dept,k=5)
         
-        print(valid_docs)
+        # print(valid_docs)
         
         if not valid_docs:
             return {

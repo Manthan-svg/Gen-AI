@@ -50,21 +50,21 @@ export default function ChatHistoryDrawer({
 
   useEffect(() => {
     if (!username) return;
-    // Ensure there's at least one session (legacy) so the list isn't empty.
-    ensureInitialChatSession(username);
-    setSessions(getChatSessions(username));
+    (async () => {
+      await ensureInitialChatSession(username);
+      const nextSessions = await getChatSessions();
+      setSessions(nextSessions);
+    })();
   }, [username, sessionsVersion, isOpen]);
 
   const pollJobStatus = async (jobId) => {
-    const maxAttempts = 300;
+    const maxAttempts = 300;  
     const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         const res = await api.get(`/job-status/${jobId}`);
         const status = res.data?.status;
-
-        console.log(`Polling Job ${jobId}: ${status}`);
         if (status === 'completed') {
           setUploadStatus('File processed successfully.');
           return;
@@ -115,25 +115,9 @@ export default function ChatHistoryDrawer({
   const deleteChatFunction = async (sessionId) => {
     if (!window.confirm('Delete this chat?')) return;
     try {
-      const response = await api.post(`/delete-chat/${sessionId}`);
-
-      // Remove the deleted chat from local storage (chatSessions)
-      const username = user?.username ?? null;
-
-      if (username && sessionId) {
-        // Remove the session from user's sessions
-        const key = `dc_chat_sessions_${username}`;
-        const sessions = JSON.parse(localStorage.getItem(key) ?? '[]');
-        const filtered = sessions.filter(s => s.sessionId !== sessionId);
-        localStorage.setItem(key, JSON.stringify(filtered));
-
-        // If the deleted chat was active, clear the activeSessionId
-        const activeSessionKey = `dc_active_chat_${username}`;
-        if (localStorage.getItem(activeSessionKey) === sessionId) {
-          localStorage.removeItem(activeSessionKey);
-        }
-      }
-      setSessions(getChatSessions(username));
+      await api.post(`/delete-chat/${sessionId}`);
+      const nextSessions = await getChatSessions();
+      setSessions(nextSessions);
     } catch (err) {
       console.log(err);
       alert('Failed to delete chat.');
@@ -255,7 +239,10 @@ export default function ChatHistoryDrawer({
                             fill="none"
                             viewBox="0 0 24 24"
                             stroke="currentColor"
-                            onClick={()=>deleteChatFunction(s.sessionId)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteChatFunction(s.sessionId);
+                            }}
                           >
                             <path
                               strokeLinecap="round"

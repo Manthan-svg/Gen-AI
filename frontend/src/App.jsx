@@ -75,7 +75,11 @@ function App() {
           )}
         </div>
 
-        <button onClick={() => { localStorage.clear(); window.location.reload(); }} className="p-4 border-t border-slate-700 flex items-center gap-2 text-slate-400 hover:text-white transition">
+        <button onClick={() => {
+          localStorage.removeItem('user-info');
+          localStorage.removeItem('token');
+          window.location.reload();
+        }} className="p-4 border-t border-slate-700 flex items-center gap-2 text-slate-400 hover:text-white transition">
           <LogOut size={16} /> <span className="text-xs">Secure Sign Out</span>
         </button>
       </aside>

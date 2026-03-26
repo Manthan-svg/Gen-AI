@@ -11,6 +11,8 @@ from jose import jwt
 from celery_worker import process_document_task
 from celery.result import AsyncResult
 from chat_history_manager import ChatHistroyManager
+from chat_session_manager import ChatSessionManager
+from database import initDB
 import supervisor
 from auth_routes import router as auth_router
 from fastapi import FastAPI,File,UploadFile,HTTPException
@@ -51,16 +53,33 @@ engine = DeepContextEngine()
 ingestor = DataIngestor()
 supervisor = supervisor.Supervisor()
 history_manager = ChatHistroyManager()
+session_manager = ChatSessionManager()
 
 class UserRequest(BaseModel):
     question:str
     sessionId:str
+
+
+class ChatSessionCreateRequest(BaseModel):
+    sessionId: str
+    title: str = "New Chat"
+
+
+class ChatSessionUpdateRequest(BaseModel):
+    title: str | None = None
+    lastMessageAt: str | None = None
+    lastMessagePreview: str | None = None
     
 
     
 @app.post("/")
 def run_server():
     return "DeepContext is working properly."
+
+
+@app.on_event("startup")
+def bootstrap_app():
+    initDB()
 
 def get_current_user_dept(token: str = Depends(oauth2_scheme)):
     try:
@@ -69,6 +88,18 @@ def get_current_user_dept(token: str = Depends(oauth2_scheme)):
         if dept is None:
             raise HTTPException(status_code=401, detail="Invalid token")
         return dept
+    except:
+        raise HTTPException(status_code=401, detail="Could not validate credentials")
+
+
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+        dept = payload.get("dept")
+        if username is None or dept is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return {"username": username, "department": dept}
     except:
         raise HTTPException(status_code=401, detail="Could not validate credentials")
 
@@ -141,6 +172,42 @@ def getAllDocuments(user_dept: str = Depends(get_current_user_dept)):
         raise HTTPException(status_code=500, detail=str(e)) 
 
 
+@app.get("/chat-sessions")
+def get_chat_sessions(current_user: dict = Depends(get_current_user)):
+    return {
+        "message": "Success",
+        "sessions": session_manager.list_sessions(current_user["username"])
+    }
+
+
+@app.post("/chat-sessions")
+def create_chat_session(payload: ChatSessionCreateRequest, current_user: dict = Depends(get_current_user)):
+    session = session_manager.create_session(
+        current_user["username"],
+        payload.sessionId,
+        payload.title or "New Chat",
+    )
+    return {
+        "message": "Chat session created successfully.",
+        "session": session
+    }
+
+
+@app.patch("/chat-sessions/{sessionId}")
+def update_chat_session(sessionId: str, payload: ChatSessionUpdateRequest, current_user: dict = Depends(get_current_user)):
+    session = session_manager.update_session(
+        current_user["username"],
+        sessionId,
+        title=payload.title,
+        last_message_at=payload.lastMessageAt,
+        last_message_preview=payload.lastMessagePreview,
+    )
+    return {
+        "message": "Chat session updated successfully.",
+        "session": session
+    }
+
+
 # ─── AFTER ───────────────────────────────────────────────────────────────────
 _SAVE_SKIP_PHRASES = [
     "i don't know", "i do not know", "no information",
@@ -150,15 +217,25 @@ _SAVE_SKIP_PHRASES = [
 ]
 
 @app.post("/get-answer")
-def get_answer(question: UserRequest, user_dept: str = Depends(get_current_user_dept)):
+def get_answer(question: UserRequest, current_user: dict = Depends(get_current_user)):
+    user_dept = current_user["department"]
+    username = current_user["username"]
+    session_manager.ensure_session(username, question.sessionId)
     history = history_manager.get_history(question.sessionId)
     result = engine.get_answer(question.question, user_dept, history)
 
     answer_text = result["answer"]
     was_retrieved = result.get("retrieved", True)
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     # Always save the human message
     history_manager.save_messages(question.sessionId, "human", question.question)
+    session_manager.update_session(
+        username,
+        question.sessionId,
+        last_message_at=now,
+        last_message_preview=question.question
+    )
 
     # Only save AI answer to history if it's meaningful.
     # A "I don't know" when docs WERE retrieved is a model failure — don't poison history.
@@ -167,13 +244,23 @@ def get_answer(question: UserRequest, user_dept: str = Depends(get_current_user_
 
     if not (is_bad_answer and was_retrieved):
         history_manager.save_messages(question.sessionId, "ai", answer_text)
+        session_manager.update_session(
+            username,
+            question.sessionId,
+            last_message_at=now,
+            last_message_preview=answer_text
+        )
     else:
         print(f"⚠️ Skipping history save — model returned weak answer despite retrieved docs.")
 
     return {"answer": answer_text}
      
 @app.post("/get-history/{sessionId}")
-async def getAllChatHistory(sessionId:str):
+async def getAllChatHistory(sessionId:str, current_user: dict = Depends(get_current_user)):
+    if not session_manager.get_session(current_user["username"], sessionId):
+        session_manager.list_sessions(current_user["username"])
+    if not session_manager.get_session(current_user["username"], sessionId):
+        raise HTTPException(status_code=404, detail="Chat session not found")
     chatHistory = history_manager.get_history(sessionId)
     if len(chatHistory) > 0:
         return {
@@ -187,8 +274,8 @@ async def getAllChatHistory(sessionId:str):
     
     
 @app.post("/delete-chat/{sessionId}")
-async def deleteChatBySessionId(sessionId:str):
-    chatHistory = history_manager.deleteChatBySession(sessionId)
+async def deleteChatBySessionId(sessionId:str, current_user: dict = Depends(get_current_user)):
+    session_manager.delete_session(current_user["username"], sessionId)
     
     return {
         "message":"Chat Deleted Successfully.."
@@ -243,7 +330,5 @@ async def slack_events(request: Request):
                     slack_token=SLACK_BOT_TOKEN
                 )
        
-
-
 
 
