@@ -13,3 +13,20 @@
 .messagesBox::-webkit-scrollbar {
     display: none;
 }
+
+.markdown-content {
+    overflow-wrap: anywhere;
+}
+
+.markdown-content table {
+    min-width: max-content;
+}
+
+.markdown-content pre code {
+    white-space: pre;
+}
+
+.markdown-content th,
+.markdown-content td {
+    vertical-align: top;
+}

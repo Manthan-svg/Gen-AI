@@ -26,6 +26,44 @@ _GARBAGE_PATTERNS = [
     "standalone question", "Standalone question"
 ]
 
+_SMALL_TALK_RESPONSES = {
+    "greeting": "Hello! I can help you with questions about your uploaded department documents. Ask me anything from the knowledge base.",
+    "thanks": "You're welcome. If you need anything from the uploaded documents, ask away.",
+    "farewell": "Goodbye! Come back anytime if you want help with the knowledge base.",
+    "assistant_help": "I can answer questions using your uploaded department documents, summarize relevant information, and help you find specific details from the knowledge base.",
+}
+
+_GREETING_PHRASES = {
+    "hello",
+    "hi",
+    "hey",
+    "good morning",
+    "good afternoon",
+    "good evening",
+}
+
+_THANKS_PHRASES = {
+    "thanks",
+    "thank you",
+    "thx",
+    "thanks a lot",
+    "thank you so much",
+}
+
+_FAREWELL_PHRASES = {
+    "bye",
+    "goodbye",
+    "see you",
+    "see you later",
+}
+
+_ASSISTANT_HELP_PHRASES = {
+    "help",
+    "what can you do",
+    "how can you help",
+    "what do you do",
+}
+
 def _is_garbage(text: str) -> bool:
     """Returns True if the standalone_q looks like LLM hallucination/garbage."""
     if not text or len(text.strip()) < 8:
@@ -69,6 +107,60 @@ def _extract_answer_text(answer_obj) -> str:
             if isinstance(val, str):
                 return val.strip()
     return str(answer_obj).strip()
+
+
+def _normalize_markdown_answer(text: str) -> str:
+    """
+    Preserve markdown structures while cleaning up excessive spacing in prose.
+    """
+    normalized = str(text or "").replace("\r\n", "\n").strip()
+    if not normalized:
+        return ""
+
+    segments = re.split(r"(```[\s\S]*?```)", normalized)
+    cleaned_segments = []
+
+    for segment in segments:
+        if not segment:
+            continue
+        if segment.startswith("```") and segment.endswith("```"):
+            cleaned_segments.append(segment.strip())
+            continue
+
+        cleaned_segments.append(re.sub(r"\n{3,}", "\n\n", segment).strip("\n"))
+
+    return "\n\n".join(part for part in cleaned_segments if part)
+
+
+def _normalize_user_text(text: str) -> str:
+    lowered = str(text or "").lower().strip()
+    lowered = re.sub(r"[^\w\s]", " ", lowered)
+    return re.sub(r"\s+", " ", lowered).strip()
+
+
+def _detect_small_talk_intent(text: str) -> str | None:
+    normalized = _normalize_user_text(text)
+    if not normalized:
+        return None
+
+    tokens = normalized.split()
+    if len(tokens) > 6:
+        return None
+
+    if normalized in _GREETING_PHRASES:
+        return "greeting"
+    if normalized in _THANKS_PHRASES:
+        return "thanks"
+    if normalized in _FAREWELL_PHRASES:
+        return "farewell"
+    if normalized in _ASSISTANT_HELP_PHRASES:
+        return "assistant_help"
+
+    # Allow a very small near-exact greeting surface such as "hi there".
+    if len(tokens) == 2 and tokens[0] in {"hello", "hi", "hey"} and tokens[1] in {"there", "team", "assistant"}:
+        return "greeting"
+
+    return None
 
 
 class DeepContextEngine:
@@ -244,6 +336,14 @@ class DeepContextEngine:
             return user_question
 
     def get_answer(self, user_question: str, user_dept: str, chat_history: List = None):
+        small_talk_intent = _detect_small_talk_intent(user_question)
+        if small_talk_intent:
+            return {
+                "answer": _SMALL_TALK_RESPONSES[small_talk_intent],
+                "retrieved": False,
+                "intent": small_talk_intent
+            }
+
         # Step 1: Reload Chroma to pick up freshly ingested docs
         vector_db = self.get_vector_db(refresh=True)
 
@@ -276,7 +376,13 @@ class DeepContextEngine:
             "after careful reading.\n"
             "4. For list-type questions (participants, members, action items, decisions), "
             "extract and list every item found in the CONTEXT.\n"
-            "5. Do not fabricate anything not in the CONTEXT.\n\n"
+            "5. Do not fabricate anything not in the CONTEXT.\n"
+            "6. Format the answer as clean markdown when it improves readability.\n"
+            "7. Use bullet points or numbered lists for multi-item answers.\n"
+            "8. Use markdown tables only when the source information is naturally tabular.\n"
+            "9. Use fenced code blocks for commands, code, or structured snippets.\n"
+            "10. Do not use raw HTML.\n"
+            "11. Keep simple answers as short plain paragraphs without unnecessary headings.\n\n"
             "CONTEXT:\n{context}"
         )
 
@@ -304,7 +410,7 @@ class DeepContextEngine:
                 "input": standalone_q,
                 "context": valid_docs
             })
-            candidate = _extract_answer_text(raw_answer)
+            candidate = _normalize_markdown_answer(_extract_answer_text(raw_answer))
 
             # If the model gave a real answer, accept it immediately
             if not _looks_like_dont_know(candidate):

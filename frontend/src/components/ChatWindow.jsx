@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import api from '../utils/api.util';
 import ChatHistoryDrawer from './ChatHistoryDrawer';
+import MarkdownRenderer from './MarkdownRenderer';
 import {
   createNewChatSession,
   ensureInitialChatSession,
@@ -106,15 +107,17 @@ export default function ChatWindow({ user }) {
           question: text, 
           sessionId: effectiveSessionId,
         });
+
+        const answer = String(res?.data?.answer ?? '').trim();
         
         setMessages(prev => [...prev, {
           role: 'ai',
-          content: res.data.answer
+          content: answer || 'No response was generated.'
         }]);
 
         await touchChatSession(effectiveSessionId, {
           lastMessageAt: new Date().toISOString(),
-          lastMessagePreview: String(res?.data?.answer ?? '').trim() || text,
+          lastMessagePreview: answer || text,
         });
         setSessionsVersion((v) => v + 1);
       } catch (err) {
@@ -145,7 +148,11 @@ export default function ChatWindow({ user }) {
           {messages.map((m, i) => (
             <div key={i} className={`flex ${m.role === 'human' ? 'justify-end' : 'justify-start'}`}>
               <div className={`max-w-[80%] rounded-2xl p-4 ${m.role === 'human' ? 'bg-blue-600 text-white' : 'bg-slate-800 border border-slate-700 text-slate-200'}`}>
-                <p className="text-sm leading-relaxed">{m.content}</p>
+                {m.role === 'human' ? (
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{m.content}</p>
+                ) : (
+                  <MarkdownRenderer content={m.content} />
+                )}
               </div>
             </div>
           ))}
