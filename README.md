@@ -13,6 +13,7 @@ DeepContext is built for teams that need to:
 - detect contradictions between newly uploaded content and existing records
 - ask natural-language questions over approved content
 - preserve chat sessions for ongoing investigative workflows
+- render AI answers with readable markdown formatting, including lists, tables, and code blocks
 - optionally ingest files shared through Slack
 
 ## Key Capabilities
@@ -26,7 +27,8 @@ DeepContext is built for teams that need to:
 - Meeting transcript summarization with participants, decisions, action items, and fatigue signals
 - Persistent vector storage with ChromaDB
 - Persistent user and chat history storage with SQLite
-- React-based chat interface with session history and file upload workflow
+- React-based chat interface with session history, markdown-rendered AI responses, and file upload workflow
+- Lightweight small-talk handling for greetings, thanks, farewells, and simple assistant-help prompts
 - Slack event hook for background ingestion of shared files
 
 ## How The System Works
@@ -73,11 +75,13 @@ Processed chunks are stored in ChromaDB with metadata. Chat history and user rec
 
 When a user asks a question:
 
+- short conversational inputs such as greetings or `help` are handled before retrieval with fixed assistant replies
 - recent chat history is normalized
 - the query is retrieved against the department-specific knowledge base
 - hybrid search combines semantic retrieval and BM25 lexical ranking
 - the best chunks are fused and passed to the LLM as context
-- the answer is generated only from retrieved context
+- the answer is generated only from retrieved context for knowledge questions
+- assistant responses are rendered in the UI as markdown with support for headings, lists, tables, links, blockquotes, and code blocks
 
 ## Architecture
 
@@ -166,6 +170,8 @@ Practical implication:
 - Vite
 - React Router
 - Axios
+- react-markdown
+- remark-gfm
 - Tailwind CSS
 
 ### Backend
