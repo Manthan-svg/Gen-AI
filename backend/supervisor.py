@@ -45,6 +45,12 @@ class Supervisor:
             )
             
             self.engine._try_persist()
+            dept_snapshot = vector_db.get(where={"department": user_dept})
+            total_docs = len(dept_snapshot.get("documents", []))
+            print(
+                f"📦 [WRITE] Meeting summary stored | dept={user_dept} | "
+                f"total_docs={total_docs} | sources={[file_name]}"
+            )
             print(f"✅ [SUCCESS] Meeting summary saved to ChromaDB.")
             return "Meeting Processed"
 
@@ -92,4 +98,16 @@ class Supervisor:
 
             vector_db.add_documents(processed_chunks)
             self.engine._try_persist()
+            dept_snapshot = vector_db.get(where={"department": user_dept})
+            total_docs = len(dept_snapshot.get("documents", []))
+            written_sources = sorted({
+                chunk.metadata.get("source_name", file_name)
+                for chunk in processed_chunks
+                if getattr(chunk, "metadata", None)
+            })
+            print(
+                f"📦 [WRITE] Audit chunks stored | dept={user_dept} | "
+                f"chunks_written={len(processed_chunks)} | total_docs={total_docs} | "
+                f"sources={written_sources}"
+            )
             return processed_chunks

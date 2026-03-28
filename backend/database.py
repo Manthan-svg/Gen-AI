@@ -1,8 +1,11 @@
 import sqlite3
+import os
+
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
 
 def initDB():
     try:
-        conn = sqlite3.connect("users.db")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -20,9 +23,15 @@ def initDB():
                 session_id TEXT,
                 role TEXT,
                 content TEXT,
+                citations TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )            
         ''')
+
+        cursor.execute("PRAGMA table_info(chat_history)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "citations" not in columns:
+            cursor.execute("ALTER TABLE chat_history ADD COLUMN citations TEXT")
 
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS chat_sessions (

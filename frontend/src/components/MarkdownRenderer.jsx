@@ -2,8 +2,75 @@ import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-export default function MarkdownRenderer({ content }) {
-  const text = String(content ?? '').trim();
+function truncateExcerpt(text, limit = 100) {
+  const value = String(text ?? '').trim().replace(/\s+/g, ' ');
+  if (!value) return '';
+  if (value.length <= limit) return value;
+  return `${value.slice(0, limit).trimEnd()}...`;
+}
+
+function groupCitationsBySource(citations) {
+  const groups = [];
+  const bySource = new Map();
+
+  for (const citation of Array.isArray(citations) ? citations : []) {
+    const sourceName = String(citation?.sourceName ?? 'Unknown source').trim() || 'Unknown source';
+    const existing = bySource.get(sourceName);
+
+    if (!existing) {
+      const group = {
+        index: groups.length + 1,
+        sourceName,
+        pages: Number.isInteger(citation?.page) ? [citation.page] : [],
+        excerpt: truncateExcerpt(citation?.snippet),
+        count: 1,
+        rawIndexes: [citation?.index].filter(Number.isInteger),
+      };
+      bySource.set(sourceName, group);
+      groups.push(group);
+      continue;
+    }
+
+    existing.count += 1;
+    if (Number.isInteger(citation?.index)) {
+      existing.rawIndexes.push(citation.index);
+    }
+    if (Number.isInteger(citation?.page) && !existing.pages.includes(citation.page)) {
+      existing.pages.push(citation.page);
+    }
+    if (!existing.excerpt && citation?.snippet) {
+      existing.excerpt = truncateExcerpt(citation.snippet);
+    }
+  }
+
+  return groups;
+}
+
+function remapCitationMarkers(content, groups) {
+  const indexMap = new Map();
+
+  for (const group of groups) {
+    for (const rawIndex of group.rawIndexes) {
+      indexMap.set(String(rawIndex), String(group.index));
+    }
+  }
+
+  return String(content ?? '').replace(/\[(\d+)\]/g, (match, index) => {
+    if (!indexMap.has(index)) return match;
+    return `[${indexMap.get(index)}]`;
+  });
+}
+
+function formatPages(pages) {
+  if (!Array.isArray(pages) || pages.length === 0) return null;
+  const sorted = [...pages].sort((a, b) => a - b);
+  if (sorted.length === 1) return `Page ${sorted[0]}`;
+  return `Pages ${sorted.join(', ')}`;
+}
+
+export default function MarkdownRenderer({ content, citations = [] }) {
+  const sourceCitations = groupCitationsBySource(citations);
+  const text = remapCitationMarkers(content, sourceCitations).trim();
 
   if (!text) return null;
 
@@ -104,6 +171,44 @@ export default function MarkdownRenderer({ content }) {
       >
         {text}
       </ReactMarkdown>
+
+      {sourceCitations.length > 0 && (
+        <div className="mt-4 rounded-xl border border-slate-700/80 bg-slate-900/60 p-3">
+          <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+            Sources
+          </p>
+          <div className="space-y-3">
+            {sourceCitations.map((citation) => {
+              const pageLabel = formatPages(citation.pages);
+              return (
+                <div
+                  key={`${citation.index}-${citation.sourceName}`}
+                  className="rounded-lg border border-slate-700/60 bg-slate-950/60 p-3"
+                >
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
+                    <p className="font-medium text-slate-200">
+                      [{citation.index}] {citation.sourceName}
+                    </p>
+                    {pageLabel ? (
+                      <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400">
+                        {pageLabel}
+                      </span>
+                    ) : null}
+                    <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400">
+                      {citation.count} {citation.count === 1 ? 'passage' : 'passages'}
+                    </span>
+                  </div>
+                  {citation.snippet && (
+                    <p className="mt-2 text-xs leading-relaxed text-slate-400">
+                      "{citation.excerpt}"
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

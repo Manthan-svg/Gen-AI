@@ -64,6 +64,8 @@ _ASSISTANT_HELP_PHRASES = {
     "what do you do",
 }
 
+_CITATION_SKIP_PREFIXES = ("#", "|")
+
 def _is_garbage(text: str) -> bool:
     """Returns True if the standalone_q looks like LLM hallucination/garbage."""
     if not text or len(text.strip()) < 8:
@@ -132,6 +134,180 @@ def _normalize_markdown_answer(text: str) -> str:
     return "\n\n".join(part for part in cleaned_segments if part)
 
 
+def _normalize_match_text(text: str) -> str:
+    normalized = str(text or "").lower()
+    normalized = re.sub(r"\[[0-9]+\]", " ", normalized)
+    normalized = re.sub(r"[^\w\s]", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _tokenize_match_text(text: str) -> List[str]:
+    return [token for token in re.findall(r"[a-z0-9]+", _normalize_match_text(text)) if len(token) > 2]
+
+
+def _extract_history_item(item):
+    if isinstance(item, dict):
+        return item.get("role"), item.get("content")
+    if isinstance(item, (list, tuple)) and len(item) >= 2:
+        return item[0], item[1]
+    return None, None
+
+
+def _split_source_spans(text: str) -> List[str]:
+    spans = []
+    for piece in re.split(r"\n+|(?<=[.!?])\s+", str(text or "")):
+        cleaned = piece.strip()
+        if len(cleaned) >= 20:
+            spans.append(cleaned)
+    if not spans and str(text or "").strip():
+        spans.append(str(text).strip())
+    return spans
+
+
+def _find_claim_citation(claim_text: str, docs: List[Document], citation_index: int):
+    claim = str(claim_text or "").strip()
+    if len(claim) < 12:
+        return None
+
+    claim_tokens = set(_tokenize_match_text(claim))
+    if len(claim_tokens) < 2:
+        return None
+
+    best_match = None
+
+    for doc in docs:
+        raw_text = str(getattr(doc, "page_content", "") or "")
+        if not raw_text.strip():
+            continue
+
+        metadata = getattr(doc, "metadata", {}) or {}
+        lowered_raw = raw_text.lower()
+        lowered_claim = claim.lower()
+        exact_index = lowered_raw.find(lowered_claim)
+
+        if exact_index != -1:
+            snippet = raw_text[exact_index: exact_index + len(claim)].strip()
+            return {
+                "index": citation_index,
+                "sourceName": metadata.get("source_name") or metadata.get("source") or "Unknown source",
+                "page": metadata.get("page"),
+                "snippet": snippet,
+                "charStart": exact_index,
+                "charEnd": exact_index + len(snippet),
+            }
+
+        normalized_claim = _normalize_match_text(claim)
+        if normalized_claim and normalized_claim in _normalize_match_text(raw_text):
+            return {
+                "index": citation_index,
+                "sourceName": metadata.get("source_name") or metadata.get("source") or "Unknown source",
+                "page": metadata.get("page"),
+                "snippet": claim,
+            }
+
+        for span in _split_source_spans(raw_text):
+            span_tokens = set(_tokenize_match_text(span))
+            if len(span_tokens) < 2:
+                continue
+
+            overlap = claim_tokens & span_tokens
+            overlap_ratio = len(overlap) / max(len(claim_tokens), 1)
+            if len(overlap) < min(4, len(claim_tokens)) or overlap_ratio < 0.6:
+                continue
+
+            span_start = lowered_raw.find(span.lower())
+            candidate = {
+                "score": overlap_ratio,
+                "citation": {
+                    "index": citation_index,
+                    "sourceName": metadata.get("source_name") or metadata.get("source") or "Unknown source",
+                    "page": metadata.get("page"),
+                    "snippet": span[:280].strip(),
+                    "charStart": span_start if span_start != -1 else None,
+                    "charEnd": (span_start + len(span.strip())) if span_start != -1 else None,
+                }
+            }
+
+            if best_match is None or candidate["score"] > best_match["score"]:
+                best_match = candidate
+
+    return best_match["citation"] if best_match else None
+
+
+def _annotate_line_with_citations(line: str, docs: List[Document], next_index: int):
+    stripped = line.strip()
+    if not stripped:
+        return line, []
+
+    if stripped.startswith(_CITATION_SKIP_PREFIXES) or stripped.startswith("```") or stripped.startswith("---"):
+        return line, []
+
+    bullet_match = re.match(r"^(\s*(?:[-*+]\s+|\d+\.\s+))(.*)$", line)
+    prefix = bullet_match.group(1) if bullet_match else ""
+    body = bullet_match.group(2) if bullet_match else line
+
+    if not body.strip():
+        return line, []
+
+    parts = re.split(r"(?<=[.!?])(\s+)", body)
+    if not parts:
+        return line, []
+
+    citations = []
+    rebuilt = []
+    current_index = next_index
+
+    for idx, part in enumerate(parts):
+        if idx % 2 == 1:
+            rebuilt.append(part)
+            continue
+
+        claim = part.strip()
+        if not claim:
+            rebuilt.append(part)
+            continue
+
+        citation = _find_claim_citation(claim, docs, current_index)
+        rebuilt.append(part)
+
+        if citation:
+            citations.append(citation)
+            rebuilt.append(f" [{current_index}]")
+            current_index += 1
+
+    return prefix + "".join(rebuilt), citations
+
+
+def _build_answer_citations(answer_text: str, docs: List[Document]):
+    if not answer_text or not docs:
+        return answer_text, []
+
+    citations = []
+    next_index = 1
+    rebuilt_segments = []
+
+    for segment in re.split(r"(```[\s\S]*?```)", answer_text):
+        if not segment:
+            continue
+
+        if segment.startswith("```") and segment.endswith("```"):
+            rebuilt_segments.append(segment)
+            continue
+
+        annotated_lines = []
+        for line in segment.splitlines(keepends=True):
+            line_body = line.rstrip("\n")
+            newline = line[len(line_body):]
+            annotated_line, new_citations = _annotate_line_with_citations(line_body, docs, next_index)
+            citations.extend(new_citations)
+            next_index += len(new_citations)
+            annotated_lines.append(annotated_line + newline)
+
+        rebuilt_segments.append("".join(annotated_lines))
+
+    return "".join(rebuilt_segments).strip(), citations
+
+
 def _normalize_user_text(text: str) -> str:
     lowered = str(text or "").lower().strip()
     lowered = re.sub(r"[^\w\s]", " ", lowered)
@@ -188,7 +364,10 @@ class DeepContextEngine:
             return []
 
         result = []
-        for role, content in chat_history[-6:]:
+        for item in chat_history[-6:]:
+            role, content = _extract_history_item(item)
+            if role is None:
+                continue
             # ✅ Skip old garbage AI responses so they don't poison the context
             if role == "ai" and _is_garbage(content):
                 print(f"⚠️ Skipping garbage history entry: {content[:60]}")
@@ -282,6 +461,18 @@ class DeepContextEngine:
         self.vector_db = self._create_vector_db()
         return self.vector_db
 
+    def fresh_reader(self):
+        """
+        Create a fresh Chroma reader while reusing the loaded embedding model and LLM.
+        """
+        reader = DeepContextEngine.__new__(DeepContextEngine)
+        reader.embeddings = self.embeddings
+        reader.db_path = self.db_path
+        reader.collection_name = self.collection_name
+        reader.llm = self.llm
+        reader.vector_db = reader._create_vector_db()
+        return reader
+
     def get_vector_db(self, refresh: bool = False):
         if refresh or self.vector_db is None:
             return self._reload_vector_db()
@@ -341,24 +532,51 @@ class DeepContextEngine:
             return {
                 "answer": _SMALL_TALK_RESPONSES[small_talk_intent],
                 "retrieved": False,
-                "intent": small_talk_intent
+                "intent": small_talk_intent,
+                "citations": []
             }
 
         # Step 1: Reload Chroma to pick up freshly ingested docs
         vector_db = self.get_vector_db(refresh=True)
 
+        visible_snapshot = vector_db.get(where={"department": user_dept})
+        visible_count = len(visible_snapshot.get("documents", []))
+        visible_sources = sorted({
+            metadata.get("source_name")
+            for metadata in visible_snapshot.get("metadatas", [])
+            if isinstance(metadata, dict) and metadata.get("source_name")
+        })
+        print(
+            f"🔎 Retrieval snapshot | dept={user_dept} | docs_visible={visible_count} | "
+            f"sources_visible={visible_sources[:10]} | question={user_question[:120]!r}"
+        )
+
         # Step 2: Convert raw history tuples → LangChain messages (filter garbage)
         safe_history = self._normalize_chat_history(chat_history)
 
         valid_docs = self._hybrid_search(user_question,user_dept,k=5)
-        
-        # print(valid_docs)
-        
+
         if not valid_docs:
             return {
                 "answer": "I'm sorry, I couldn't find any relevant information in the documents for your question.",
-                "retrieved": False
+                "retrieved": False,
+                "citations": []
             }
+        print(valid_docs)
+            
+        top_retrieval_preview = [
+            {
+                "source": (doc.metadata or {}).get("source_name", "Unknown source"),
+                "page": (doc.metadata or {}).get("page"),
+                "status": (doc.metadata or {}).get("status"),
+                "preview": doc.page_content[:120].replace("\n", " "),
+            }
+            for doc in valid_docs[:5]
+        ]
+        print(f"🔎 Top retrieved docs | {top_retrieval_preview}")
+        
+        # print(valid_docs)
+        
 
         # Step 5: Get standalone question (safe, with fallback)
         standalone_q = self._get_standalone_question(user_question, safe_history)
@@ -420,4 +638,10 @@ class DeepContextEngine:
             print(f"⚠️ Attempt {attempt + 1}: LLM returned a weak answer despite valid docs. Retrying...")
             answer_text = candidate  # keep last attempt as fallback
 
-        return {"answer": answer_text, "retrieved": True}
+        annotated_answer, citations = _build_answer_citations(answer_text, valid_docs)
+
+        return {
+            "answer": annotated_answer,
+            "retrieved": True,
+            "citations": citations
+        }

@@ -16,10 +16,18 @@ function normalizeHistoryPayload(payload) {
 
   return raw
     .map((item) => {
+      if (item && typeof item === 'object' && !Array.isArray(item)) {
+        return {
+          role: item.role,
+          content: item.content,
+          citations: Array.isArray(item.citations) ? item.citations : [],
+        };
+      }
       if (Array.isArray(item) && item.length >= 2) {
         return { 
           role: item[0], 
-          content: item[1]
+          content: item[1],
+          citations: Array.isArray(item[2]) ? item[2] : [],
         };
       }
       return null;
@@ -51,7 +59,8 @@ export default function ChatWindow({ user }) {
           setMessages(
             normalized.map((m) => ({
               role: m.role,
-              content: m.content
+              content: m.content,
+              citations: Array.isArray(m.citations) ? m.citations : [],
             }))
           );
         } catch {
@@ -107,12 +116,15 @@ export default function ChatWindow({ user }) {
           question: text, 
           sessionId: effectiveSessionId,
         });
+        console.log(res);
 
         const answer = String(res?.data?.answer ?? '').trim();
+
         
         setMessages(prev => [...prev, {
           role: 'ai',
-          content: answer || 'No response was generated.'
+          content: answer || 'No response was generated.',
+          citations: Array.isArray(res?.data?.citations) ? res.data.citations : [],
         }]);
 
         await touchChatSession(effectiveSessionId, {
@@ -151,7 +163,7 @@ export default function ChatWindow({ user }) {
                 {m.role === 'human' ? (
                   <p className="text-sm leading-relaxed whitespace-pre-wrap">{m.content}</p>
                 ) : (
-                  <MarkdownRenderer content={m.content} />
+                  <MarkdownRenderer content={m.content} citations={m.citations} />
                 )}
               </div>
             </div>

@@ -3,6 +3,9 @@ from supervisor import Supervisor
 import requests
 import os
 
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BACKEND_DIR, "data")
+
 app = Celery(
     "deepcontext_worker",
     broker="redis://localhost:6379/0",
@@ -16,11 +19,12 @@ app.conf.update(
 
 @app.task(name="process_document_task")
 def process_document_task(file_source: str, user_dept: str, is_slack_upload: bool = False, slack_token: str = None):
+    os.makedirs(DATA_DIR, exist_ok=True)
 
     if is_slack_upload:
         # Use a proper filename (sanitize it!)
         file_name = file_source.split('/')[-1]
-        local_path = os.path.join("./data", f"slack_{file_name}")
+        local_path = os.path.join(DATA_DIR, f"slack_{file_name}")
         
         # Download with Authorization Header
         headers = {"Authorization": f"Bearer {slack_token}"}

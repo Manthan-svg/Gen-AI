@@ -225,6 +225,7 @@ def get_answer(question: UserRequest, current_user: dict = Depends(get_current_u
     result = engine.get_answer(question.question, user_dept, history)
 
     answer_text = result["answer"]
+    citations = result.get("citations", [])
     was_retrieved = result.get("retrieved", True)
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -243,7 +244,7 @@ def get_answer(question: UserRequest, current_user: dict = Depends(get_current_u
     is_bad_answer = any(phrase in answer_lower for phrase in _SAVE_SKIP_PHRASES)
 
     if not (is_bad_answer and was_retrieved):
-        history_manager.save_messages(question.sessionId, "ai", answer_text)
+        history_manager.save_messages(question.sessionId, "ai", answer_text, citations=citations)
         session_manager.update_session(
             username,
             question.sessionId,
@@ -253,7 +254,10 @@ def get_answer(question: UserRequest, current_user: dict = Depends(get_current_u
     else:
         print(f"⚠️ Skipping history save — model returned weak answer despite retrieved docs.")
 
-    return {"answer": answer_text}
+    return {
+        "answer": answer_text,
+        "citations": citations
+    }
      
 @app.post("/get-history/{sessionId}")
 async def getAllChatHistory(sessionId:str, current_user: dict = Depends(get_current_user)):
@@ -330,5 +334,4 @@ async def slack_events(request: Request):
                     slack_token=SLACK_BOT_TOKEN
                 )
        
-
 
