@@ -6,7 +6,9 @@ from typing import List
 from langchain_chroma import Chroma
 import chromadb
 from chromadb.config import Settings
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from chromadb.config import System
+from chromadb.telemetry.product import ProductTelemetryClient, ProductTelemetryEvent
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -15,10 +17,22 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain.schema import Document
 from dotenv import load_dotenv
 from ingestor import DataIngestor
+from overrides import override
 
 
 
 load_dotenv()
+
+
+class NoOpProductTelemetry(ProductTelemetryClient):
+    """Disable Chroma product telemetry to avoid noisy startup/runtime errors."""
+
+    def __init__(self, system: System):
+        super().__init__(system)
+
+    @override
+    def capture(self, event: ProductTelemetryEvent) -> None:
+        return None
 
 # Known garbage patterns produced by broken contextualize LLM calls
 _GARBAGE_PATTERNS = [
@@ -164,11 +178,69 @@ def _split_source_spans(text: str) -> List[str]:
     return spans
 
 
-def _find_claim_citation(claim_text: str, docs: List[Document], citation_index: int):
+def _cosine_similarity(a: list, b: list) -> float:
+    a, b = np.array(a), np.array(b)
+    denom = (np.linalg.norm(a) * np.linalg.norm(b))
+    if denom == 0:
+        return 0.0
+    return float(np.dot(a, b) / denom)
+
+
+def _find_claim_citation(
+    claim_text: str,
+    docs: List[Document],
+    citation_index: int,
+    chunk_embeddings: list | None = None,   # NEW: pre-computed embeddings
+    embed_fn=None,                           # NEW: embedding callable
+):
+    """
+    Two-level citation:
+      Level 1 — semantic similarity via embeddings (handles paraphrase).
+      Level 2 — exact / token-overlap text match (fast, kept as secondary).
+    Returns a citation dict or None.
+    """
     claim = str(claim_text or "").strip()
     if len(claim) < 12:
         return None
 
+    # ── Level 1: semantic similarity ─────────────────────────────────────────
+    SEMANTIC_THRESHOLD = 0.50   # tune: lower = more citations, higher = stricter
+
+    if embed_fn is not None and chunk_embeddings:
+        try:
+            claim_emb = embed_fn([claim])[0]
+            best_score = 0.0
+            best_doc = None
+
+            for doc, chunk_emb in zip(docs, chunk_embeddings):
+                score = _cosine_similarity(claim_emb, chunk_emb)
+                if score > best_score:
+                    best_score = score
+                    best_doc = doc
+
+            if best_score >= SEMANTIC_THRESHOLD and best_doc is not None:
+                meta = getattr(best_doc, "metadata", {}) or {}
+                # Pick best snippet via token overlap for the excerpt
+                claim_tokens = set(_tokenize_match_text(claim))
+                best_snippet = best_doc.page_content[:280]
+                best_span_score = 0
+                for span in _split_source_spans(best_doc.page_content):
+                    overlap = len(claim_tokens & set(_tokenize_match_text(span)))
+                    if overlap > best_span_score:
+                        best_span_score = overlap
+                        best_snippet = span[:280]
+
+                return {
+                    "index": citation_index,
+                    "sourceName": meta.get("source_name") or meta.get("source") or "Unknown source",
+                    "page": meta.get("page"),
+                    "snippet": best_snippet.strip(),
+                    "semanticScore": round(best_score, 3),
+                }
+        except Exception as e:
+            print(f"⚠️ Semantic citation failed: {e}")
+
+    # ── Level 2: original text-matching logic (unchanged fallback) ────────────
     claim_tokens = set(_tokenize_match_text(claim))
     if len(claim_tokens) < 2:
         return None
@@ -192,8 +264,6 @@ def _find_claim_citation(claim_text: str, docs: List[Document], citation_index: 
                 "sourceName": metadata.get("source_name") or metadata.get("source") or "Unknown source",
                 "page": metadata.get("page"),
                 "snippet": snippet,
-                "charStart": exact_index,
-                "charEnd": exact_index + len(snippet),
             }
 
         normalized_claim = _normalize_match_text(claim)
@@ -212,7 +282,7 @@ def _find_claim_citation(claim_text: str, docs: List[Document], citation_index: 
 
             overlap = claim_tokens & span_tokens
             overlap_ratio = len(overlap) / max(len(claim_tokens), 1)
-            if len(overlap) < min(4, len(claim_tokens)) or overlap_ratio < 0.6:
+            if len(overlap) < min(4, len(claim_tokens)) or overlap_ratio < 0.55:  # slightly looser
                 continue
 
             span_start = lowered_raw.find(span.lower())
@@ -233,8 +303,13 @@ def _find_claim_citation(claim_text: str, docs: List[Document], citation_index: 
 
     return best_match["citation"] if best_match else None
 
-
-def _annotate_line_with_citations(line: str, docs: List[Document], next_index: int):
+def _annotate_line_with_citations(
+    line: str,
+    docs: List[Document],
+    next_index: int,
+    chunk_embeddings: list | None = None,   # NEW
+    embed_fn=None,                           # NEW
+):
     stripped = line.strip()
     if not stripped:
         return line, []
@@ -267,7 +342,12 @@ def _annotate_line_with_citations(line: str, docs: List[Document], next_index: i
             rebuilt.append(part)
             continue
 
-        citation = _find_claim_citation(claim, docs, current_index)
+        # Pass embeddings to the citation finder
+        citation = _find_claim_citation(
+            claim, docs, current_index,
+            chunk_embeddings=chunk_embeddings,
+            embed_fn=embed_fn,
+        )
         rebuilt.append(part)
 
         if citation:
@@ -277,8 +357,12 @@ def _annotate_line_with_citations(line: str, docs: List[Document], next_index: i
 
     return prefix + "".join(rebuilt), citations
 
-
-def _build_answer_citations(answer_text: str, docs: List[Document]):
+def _build_answer_citations(
+    answer_text: str,
+    docs: List[Document],
+    chunk_embeddings: list | None = None,   # NEW
+    embed_fn=None,                           # NEW
+):
     if not answer_text or not docs:
         return answer_text, []
 
@@ -298,15 +382,36 @@ def _build_answer_citations(answer_text: str, docs: List[Document]):
         for line in segment.splitlines(keepends=True):
             line_body = line.rstrip("\n")
             newline = line[len(line_body):]
-            annotated_line, new_citations = _annotate_line_with_citations(line_body, docs, next_index)
+            annotated_line, new_citations = _annotate_line_with_citations(
+                line_body, docs, next_index,
+                chunk_embeddings=chunk_embeddings,
+                embed_fn=embed_fn,
+            )
             citations.extend(new_citations)
             next_index += len(new_citations)
             annotated_lines.append(annotated_line + newline)
 
         rebuilt_segments.append("".join(annotated_lines))
 
-    return "".join(rebuilt_segments).strip(), citations
+    annotated_answer = "".join(rebuilt_segments).strip()
 
+    # ── Guarantee: if ZERO citations matched, add doc-level fallback ──────────
+    if not citations:
+        seen = set()
+        for i, doc in enumerate(docs, start=1):
+            meta = getattr(doc, "metadata", {}) or {}
+            src = meta.get("source_name") or meta.get("source") or "Unknown source"
+            if src not in seen:
+                seen.add(src)
+                citations.append({
+                    "index": i,
+                    "sourceName": src,
+                    "page": meta.get("page"),
+                    "snippet": doc.page_content[:200].strip(),
+                    "isFallback": True,   # frontend can style differently if desired
+                })
+
+    return annotated_answer, citations
 
 def _normalize_user_text(text: str) -> str:
     lowered = str(text or "").lower().strip()
@@ -341,7 +446,12 @@ def _detect_small_talk_intent(text: str) -> str | None:
 
 class DeepContextEngine:
     def __init__(self):
-        self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_kwargs={"device": "cpu", "local_files_only": True},
+            encode_kwargs={"normalize_embeddings": False},
+            cache_folder=os.path.expanduser("~/.cache/huggingface/hub"),
+        )
 
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.db_path = os.path.join(current_dir, "chroma_db")
@@ -448,7 +558,11 @@ class DeepContextEngine:
         """Create a fresh Chroma handle against the persistent collection."""
         fresh_client = chromadb.PersistentClient(
             path=self.db_path,
-            settings=Settings(anonymized_telemetry=False)
+            settings=Settings(
+                anonymized_telemetry=False,
+                chroma_product_telemetry_impl="rag_engine.NoOpProductTelemetry",
+                chroma_telemetry_impl="rag_engine.NoOpProductTelemetry",
+            )
         )
         return Chroma( 
             client=fresh_client,
@@ -499,6 +613,7 @@ class DeepContextEngine:
 
         contextualize_q_prompt = ChatPromptTemplate.from_messages([
             ("system", contextualize_q_system_prompt),
+            MessagesPlaceholder("chat-history"),
             ("human", "{input}")
         ])
 
@@ -638,7 +753,27 @@ class DeepContextEngine:
             print(f"⚠️ Attempt {attempt + 1}: LLM returned a weak answer despite valid docs. Retrying...")
             answer_text = candidate  # keep last attempt as fallback
 
-        annotated_answer, citations = _build_answer_citations(answer_text, valid_docs)
+
+        chunk_embeddings = None
+        try:
+            texts = [doc.page_content[:512] for doc in valid_docs]   # truncate for speed
+            chunk_embeddings = self.embeddings.embed_documents(texts)
+        except Exception as e:
+            print(f"⚠️ Could not pre-compute chunk embeddings for citation: {e}")
+
+        # Embedding callable for claim-level queries
+        embed_fn = None
+        try:
+            embed_fn = self.embeddings.embed_documents   # same model, list → list of vectors
+        except Exception:
+            pass
+
+        annotated_answer, citations = _build_answer_citations(
+            answer_text,
+            valid_docs,
+            chunk_embeddings=chunk_embeddings,
+            embed_fn=embed_fn,
+        )
 
         return {
             "answer": annotated_answer,

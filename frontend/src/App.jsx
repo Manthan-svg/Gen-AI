@@ -1,16 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import ChatWindow from './components/ChatWindow';
-import { Shield, Database, MessageSquare, AlertCircle, CheckCircle2, Loader2, LogOut, Clock } from 'lucide-react'
+import { Shield, CheckCircle2, LogOut } from 'lucide-react'
 import api from './utils/api.util';
-import ConflictModal from './components/ConflictModal';
 
 
 function App() {
   const [docs, setDocs] = useState([]);
-  const [loading, setLoading] = useState(false);
   const [user, setUser] = useState(JSON.parse(localStorage.getItem("user-info")))
-  const [isConflictModalOpen, setConflictModal] = useState(false);
-  const [conflictReason, setConflictReason] = useState("");
 
   const fetchDocs = async () => {
     try {
@@ -45,18 +41,10 @@ function App() {
           <h2 className="text-[10px] font-semibold text-slate-500 mb-4 uppercase">Knowledge Base</h2>
           <div className="space-y-2">
             {docs?.map((doc, i) => (
-              <div key={i} className={`p-3 rounded-xl border transition-all ${doc.status === 'conflict' ? 'bg-red-500/10 border-red-500/50' : 'bg-slate-800/50 border-slate-700'}`}>
-                <div
-                  onClick={() => {
-                    if (doc.status === 'conflict') {
-                      setConflictModal(true);
-                      setConflictReason(doc.conflict_reason);
-                    }
-                  }}
-                  className="flex items-center justify-between mb-1"
-                >
+              <div key={i} className="p-3 rounded-xl border transition-all bg-slate-800/50 border-slate-700">
+                <div className="flex items-center justify-between mb-1">
                   <span className="text-xs font-medium truncate w-40">{doc.name}</span>
-                  {doc.status === 'conflict' ? <AlertCircle size={14} className="text-red-400" /> : <CheckCircle2 size={14} className="text-emerald-400" />}
+                  <CheckCircle2 size={14} className="text-emerald-400" />
                 </div>
                 <div className="text-[10px] text-slate-500 flex justify-between">
                   <span>{doc.status}</span>
@@ -65,14 +53,6 @@ function App() {
               </div>
             ))}
           </div>
-          {/* Show ConflictModal when isConflictModal is true */}
-          {isConflictModalOpen && (
-            <ConflictModal
-              isOpen={isConflictModalOpen}
-              onClose={() => setConflictModal(false)}
-              conflictReason={conflictReason}
-            />
-          )}
         </div>
 
         <button onClick={() => {

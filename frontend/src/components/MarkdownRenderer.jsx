@@ -198,7 +198,7 @@ export default function MarkdownRenderer({ content, citations = [] }) {
                       {citation.count} {citation.count === 1 ? 'passage' : 'passages'}
                     </span>
                   </div>
-                  {citation.snippet && (
+                  {citation.excerpt && (
                     <p className="mt-2 text-xs leading-relaxed text-slate-400">
                       "{citation.excerpt}"
                     </p>

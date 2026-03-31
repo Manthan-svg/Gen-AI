@@ -158,7 +158,6 @@ def getAllDocuments(user_dept: str = Depends(get_current_user_dept)):
                     "name": d.get('source_name'),
                     "status": d.get('status', 'unknown'),
                     "time": d.get('ingested_at', 'N/A'),
-                    "conflict_reason": d.get('conflict_reason', "No Conflict Reason for this File.") if d.get('status') == "conflict" else None
                 })
                 seen.add(d.get('source_name'))
                 
@@ -334,4 +333,3 @@ async def slack_events(request: Request):
                     slack_token=SLACK_BOT_TOKEN
                 )
        
-

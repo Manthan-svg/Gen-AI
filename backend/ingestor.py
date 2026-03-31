@@ -119,7 +119,7 @@ class DataIngestor:
                 else:
                     print(f"📄 Text-based PDF detected. Using fast extraction.")
                     final_docs = raw_docs
-            elif ext in ['.txt', '.md']:
+            elif ext in ['.txt', '.md' , '.puml']:
                 try:
                     loader = TextLoader(filePath,encoding="utf-8")
                     final_docs = loader.load()

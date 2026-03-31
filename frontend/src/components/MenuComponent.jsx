@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { AlertTriangle, CheckCircle, Clock, FileText, Upload } from 'lucide-react'
+import { CheckCircle, Clock, FileText, Upload } from 'lucide-react'
 import api from '../utils/api.util'
 
 function MenuComponent() {
@@ -135,9 +135,7 @@ function MenuComponent() {
                                 <span className="text-sm font-medium truncate w-40">{doc.name}</span>
                                 {doc.status === 'verified' ? (
                                     <CheckCircle size={16} className="text-green-500" />
-                                ) : doc.status === 'conflict' ? (
-                                    <AlertTriangle size={16} className="text-red-500" />
-                                ) : (
+                                ) :(
                                     <FileText size={16} className="text-blue-500" />
                                 )}
                             </div>
