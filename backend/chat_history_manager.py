@@ -11,17 +11,24 @@ class ChatHistroyManager:
         if "citations" not in columns:
             cursor.execute("ALTER TABLE chat_history ADD COLUMN citations TEXT")
 
-    def save_messages(self, sessionId: str, role: str, content: str, citations=None):
+    def save_messages(self, sessionId: str, role: str, content: str, citations=None,diagrams=None):
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        self._ensure_citations_column(cursor)
+        self._ensure_diagrams_column(cursor)
         
         cursor.execute(
-            "INSERT INTO chat_history (session_id, role, content, citations) VALUES (?, ?, ?, ?)",
-            (sessionId, role, content, json.dumps(citations) if citations else None)
+            "INSERT INTO chat_history (session_id, role, content, citations,diagrams) VALUES (?, ?, ?, ?, ?)",
+            (sessionId, role, content, json.dumps(citations) if citations else None,
+              json.dumps(diagrams) if diagrams else None                  )
         )
         conn.commit()
         conn.close()
+        
+    def _ensure_diagrams_column(self, cursor):
+        cursor.execute("PRAGMA table_info(chat_history)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "diagrams" not in columns:
+            cursor.execute("ALTER TABLE chat_history ADD COLUMN diagrams TEXT")
         
     def get_history(self, sessionId: str, limit=200):
         conn = sqlite3.connect(DB_PATH)

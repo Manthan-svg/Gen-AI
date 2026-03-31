@@ -1,8 +1,8 @@
 # DeepContext
 
-DeepContext is a department-aware enterprise knowledge assistant that ingests internal documents, audits them against existing knowledge, stores verified content in a retrieval system, and answers user questions through a secure chat interface.
+DeepContext is a department-aware enterprise knowledge assistant that ingests internal documents, stores department-scoped content in a retrieval system, and answers user questions through a secure chat interface.
 
-The platform combines document ingestion, OCR-assisted extraction for image-heavy files, hybrid retrieval, conflict detection, meeting summarization, and session-based chat history into a single workflow designed for internal knowledge operations.
+The platform combines document ingestion, OCR-assisted extraction for image-heavy files, hybrid retrieval, meeting summarization, and session-based chat history into a single workflow designed for internal knowledge operations.
 
 ## Overview
 
@@ -10,7 +10,6 @@ DeepContext is built for teams that need to:
 
 - upload business documents into a searchable knowledge base
 - keep knowledge segmented by department
-- detect contradictions between newly uploaded content and existing records
 - ask natural-language questions over approved content
 - preserve chat sessions for ongoing investigative workflows
 - render AI answers with readable markdown formatting, including lists, tables, and code blocks
@@ -23,11 +22,10 @@ DeepContext is built for teams that need to:
 - Support for text files, PDFs, scanned PDFs, and standalone images
 - OCR-style extraction for image files and scanned PDF pages using a multimodal LLM prompt
 - Hybrid retrieval using vector similarity plus BM25 lexical ranking
-- Conflict detection between new content and previously stored departmental knowledge
 - Meeting transcript summarization with participants, decisions, action items, and fatigue signals
 - Persistent vector storage with ChromaDB
 - Persistent user and chat history storage with SQLite
-- React-based chat interface with session history, markdown-rendered AI responses, and file upload workflow
+- React-based chat interface with session history, markdown-rendered AI responses, inline citations, source cards, and file upload workflow
 - Lightweight small-talk handling for greetings, thanks, farewells, and simple assistant-help prompts
 - Slack event hook for background ingestion of shared files
 
@@ -60,18 +58,14 @@ Extracted content is cleaned, split into chunks, and enriched with metadata such
 - file path
 - ingestion timestamp
 - department
-- audit status
+- processing status
 - version
 
-### 5. Conflict audit
-
-Before storage, new chunks are compared with the most relevant existing departmental knowledge. A conflict agent flags only direct contradictions, not omissions or expected role-based differences. Documents are marked as `verified` or `conflict` and surfaced accordingly in the UI.
-
-### 6. Knowledge storage
+### 5. Knowledge storage
 
 Processed chunks are stored in ChromaDB with metadata. Chat history and user records are stored in SQLite. Background processing state is handled by Celery with Redis as broker and result backend.
 
-### 7. Question answering
+### 6. Question answering
 
 When a user asks a question:
 
@@ -81,6 +75,8 @@ When a user asks a question:
 - hybrid search combines semantic retrieval and BM25 lexical ranking
 - the best chunks are fused and passed to the LLM as context
 - the answer is generated only from retrieved context for knowledge questions
+- assistant responses are normalized into clean markdown
+- inline citations and source metadata are attached after answer generation
 - assistant responses are rendered in the UI as markdown with support for headings, lists, tables, links, blockquotes, and code blocks
 
 ## Architecture
@@ -98,7 +94,6 @@ FastAPI Backend
     +--> Celery Worker --> Redis
     |         |
     |         +--> DataIngestor
-    |         +--> ConflictAgent
     |         +--> MeetingAgent
     |         +--> ChromaDB
     |
@@ -125,7 +120,6 @@ DeepContext/
 │   ├── chat_history_manager.py    # SQLite-backed conversation history
 │   ├── database.py                # SQLite schema initialization
 │   ├── meeting_agent.py           # Transcript summarization workflow
-│   ├── conflictAgent.py           # Contradiction detection workflow
 │   └── requirements.txt
 └── frontend/
     ├── src/App.jsx                # Main authenticated app shell
@@ -287,7 +281,7 @@ After all services are started:
 3. Upload a document
 4. Wait for the background job to complete
 5. Ask questions in the chat window
-6. Review document verification or conflict status in the sidebar
+6. Review uploaded document status in the sidebar
 
 ## Core API Endpoints
 
@@ -321,6 +315,8 @@ The question-answering pipeline uses:
 - BM25 for lexical relevance
 - reciprocal rank fusion to merge both rankings
 - an LLM answer layer constrained to retrieved context
+- markdown normalization before the response is returned
+- citation attachment so the frontend can show inline references and source cards
 
 The chat system also stores session history in SQLite and uses recent messages to reformulate follow-up questions into standalone queries before retrieval.
 

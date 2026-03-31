@@ -119,12 +119,14 @@ export default function ChatWindow({ user }) {
         console.log(res);
 
         const answer = String(res?.data?.answer ?? '').trim();
+        const diagrams = Array.isArray(res?.data?.diagrams) ? diagrams : [];
 
         
         setMessages(prev => [...prev, {
           role: 'ai',
           content: answer || 'No response was generated.',
           citations: Array.isArray(res?.data?.citations) ? res.data.citations : [],
+          diagrams
         }]);
 
         await touchChatSession(effectiveSessionId, {

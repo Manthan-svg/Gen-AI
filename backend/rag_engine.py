@@ -18,6 +18,7 @@ from langchain.schema import Document
 from dotenv import load_dotenv
 from ingestor import DataIngestor
 from overrides import override
+from diagram_utils import extract_diagrams_from_docs,is_diagram_question
 
 
 
@@ -678,7 +679,19 @@ class DeepContextEngine:
                 "citations": []
             }
         print(valid_docs)
-            
+        
+        """  
+            Diagram Detection Logic
+        """
+        diagrams = []
+        has_diagram_chunks = any(
+            (getattr(d, "metadata", {}) or {}).get("content_type") in ("plantuml", "mermaid")
+            for d in valid_docs
+        )
+
+        if is_diagram_question(user_question) or has_diagram_chunks:
+            diagrams = extract_diagrams_from_docs(valid_docs)
+                    
         top_retrieval_preview = [
             {
                 "source": (doc.metadata or {}).get("source_name", "Unknown source"),
@@ -778,5 +791,6 @@ class DeepContextEngine:
         return {
             "answer": annotated_answer,
             "retrieved": True,
-            "citations": citations
+            "citations": citations,
+            "diagrams":diagrams
         }

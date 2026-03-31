@@ -1,6 +1,7 @@
 from datetime import datetime
 from json import load
 import os
+import re
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
@@ -11,6 +12,7 @@ import base64
 from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from PIL import Image
+
 
 load_dotenv()
 
@@ -74,8 +76,42 @@ class DataIngestor:
         response = chain.invoke({})
         
         return response.content
+    
+    def _extract_plantuml_from_text(self, text: str):
+        """Returns the first @startuml...@enduml block found, or None."""
+        match = re.search(r"(@startuml[\s\S]*?@enduml)", text, re.IGNORECASE)
+        return match.group(1).strip() if match else None
 
+    def _extract_mermaid_from_text(self, text: str):
+        """Returns the first ```mermaid...``` block found, or None."""
+        match = re.search(r"```mermaid\s*([\s\S]*?)```", text)
+        return match.group(1).strip() if match else None
+    
+    def _tag_diagram_chunks_(self,chunks:list) -> list:
+        for chunk in chunks:
+            text = chunk.page_content
+            
+            puml_code = self._extract_plantuml_from_text(text)
+            
+            if puml_code:
+                chunk.metadata["content_type"] = "plantuml"
+                chunk.metadata["diagram_code"] = puml_code
+                chunk.metadata["diagram_title"] = self._extract_puml_title(puml_code)
+                
+                
+            mermaid_code = self._extract_mermaid_from_text(text)
+            
+            if mermaid_code:
+                chunk.metadata["content_type"] = "mermaid"
+                chunk.metadata["diagram_code"] = mermaid_code
+                chunk.metadata["diagram_title"] = chunk.metadata.get("source_name", "Diagram")
 
+        return chunks
+    
+    def _extract_puml_title(self, code: str) -> str:
+        match = re.search(r"title\s+(.+)", code)
+        return match.group(1).strip() if match else "Untitled diagram"
+            
 
     def ingestion_documents(self, filePath: str, user_dept: str = "general"):
         ext = os.path.splitext(filePath)[1].lower()      
@@ -144,6 +180,9 @@ class DataIngestor:
                 chunk.metadata["status"] = "pending"
                 chunk.metadata["department"] = user_dept
                 chunk.metadata["version"] = 1.0
+                
+                
+            chunks = self._tag_diagram_chunks_(chunks)
                 
 
             return chunks   

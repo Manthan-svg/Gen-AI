@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import DiagramRenderer from './DiagramRenderer';
 
 function truncateExcerpt(text, limit = 100) {
   const value = String(text ?? '').trim().replace(/\s+/g, ' ');
@@ -68,7 +69,7 @@ function formatPages(pages) {
   return `Pages ${sorted.join(', ')}`;
 }
 
-export default function MarkdownRenderer({ content, citations = [] }) {
+export default function MarkdownRenderer({ content, citations = [],diagrams= [] }) {
   const sourceCitations = groupCitationsBySource(citations);
   const text = remapCitationMarkers(content, sourceCitations).trim();
 
@@ -171,6 +172,8 @@ export default function MarkdownRenderer({ content, citations = [] }) {
       >
         {text}
       </ReactMarkdown>
+
+      <DiagramRenderer diagrams={diagrams} />
 
       {sourceCitations.length > 0 && (
         <div className="mt-4 rounded-xl border border-slate-700/80 bg-slate-900/60 p-3">

@@ -225,6 +225,7 @@ def get_answer(question: UserRequest, current_user: dict = Depends(get_current_u
 
     answer_text = result["answer"]
     citations = result.get("citations", [])
+    diagrams = result.get("diagrams",[])
     was_retrieved = result.get("retrieved", True)
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -236,14 +237,14 @@ def get_answer(question: UserRequest, current_user: dict = Depends(get_current_u
         last_message_at=now,
         last_message_preview=question.question
     )
-
+  
     # Only save AI answer to history if it's meaningful.
     # A "I don't know" when docs WERE retrieved is a model failure — don't poison history.
     answer_lower = answer_text.lower().strip()
     is_bad_answer = any(phrase in answer_lower for phrase in _SAVE_SKIP_PHRASES)
 
     if not (is_bad_answer and was_retrieved):
-        history_manager.save_messages(question.sessionId, "ai", answer_text, citations=citations)
+        history_manager.save_messages(question.sessionId, "ai", answer_text, citations=citations,diagrams=diagrams)
         session_manager.update_session(
             username,
             question.sessionId,
@@ -255,7 +256,8 @@ def get_answer(question: UserRequest, current_user: dict = Depends(get_current_u
 
     return {
         "answer": answer_text,
-        "citations": citations
+        "citations": citations,
+        "diagrams":diagrams
     }
      
 @app.post("/get-history/{sessionId}")
