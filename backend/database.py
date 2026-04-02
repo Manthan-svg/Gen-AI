@@ -32,6 +32,8 @@ def initDB():
         columns = {row[1] for row in cursor.fetchall()}
         if "citations" not in columns:
             cursor.execute("ALTER TABLE chat_history ADD COLUMN citations TEXT")
+        if "diagrams" not in columns:
+            cursor.execute("ALTER TABLE chat_history ADD COLUMN diagrams TEXT")
 
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -51,6 +53,9 @@ def initDB():
         conn.close()
     except Exception as e:
         return {"message":e}
+    
+    
+
     
     
     

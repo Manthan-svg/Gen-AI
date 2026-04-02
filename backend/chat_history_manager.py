@@ -14,6 +14,7 @@ class ChatHistroyManager:
     def save_messages(self, sessionId: str, role: str, content: str, citations=None,diagrams=None):
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
+        self._ensure_citations_column(cursor)
         self._ensure_diagrams_column(cursor)
         
         cursor.execute(
@@ -34,9 +35,10 @@ class ChatHistroyManager:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         self._ensure_citations_column(cursor)
+        self._ensure_diagrams_column(cursor)
         
         cursor.execute(
-            "SELECT role, content, citations FROM chat_history WHERE session_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?",
+            "SELECT role, content, citations ,diagrams FROM chat_history WHERE session_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?",
             (sessionId, limit,)
         )
         
@@ -44,17 +46,24 @@ class ChatHistroyManager:
         conn.close()
         
         history = []
-        for role, content, citations in reversed(result):
+        for role, content, citations, diagrams_raw in reversed(result):
             parsed_citations = []
+            parsed_diagrams = []
             if citations:
                 try:
                     parsed_citations = json.loads(citations)
                 except json.JSONDecodeError:
                     parsed_citations = []
+            if diagrams_raw:
+                try:
+                    parsed_diagrams = json.loads(diagrams_raw)
+                except json.JSONDecodeError:
+                    parsed_diagrams = []
             history.append({
                 "role": role,
                 "content": content,
-                "citations": parsed_citations if role == "ai" else []
+                "citations": parsed_citations if role == "ai" else [],
+                "diagrams" : parsed_diagrams if role == "ai" else []
             })
             
         return history

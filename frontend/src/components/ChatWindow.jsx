@@ -21,6 +21,7 @@ function normalizeHistoryPayload(payload) {
           role: item.role,
           content: item.content,
           citations: Array.isArray(item.citations) ? item.citations : [],
+          diagrams:Array.isArray(item.diagrams) ? item.diagrams : [],
         };
       }
       if (Array.isArray(item) && item.length >= 2) {
@@ -28,6 +29,7 @@ function normalizeHistoryPayload(payload) {
           role: item[0], 
           content: item[1],
           citations: Array.isArray(item[2]) ? item[2] : [],
+          diagrams: Array.isArray(item[3]) ? item[3] : [],
         };
       }
       return null;
@@ -61,6 +63,7 @@ export default function ChatWindow({ user }) {
               role: m.role,
               content: m.content,
               citations: Array.isArray(m.citations) ? m.citations : [],
+              diagrams: Array.isArray(m.diagrams) ? m.diagrams : [],
             }))
           );
         } catch {
@@ -119,19 +122,19 @@ export default function ChatWindow({ user }) {
         console.log(res);
 
         const answer = String(res?.data?.answer ?? '').trim();
-        const diagrams = Array.isArray(res?.data?.diagrams) ? diagrams : [];
-
-        
+        const diagrams = Array.isArray(res?.data?.diagrams) ? res?.data?.diagrams : [];
+        const content = answer || (diagrams.length > 0 ? '' : 'No response was generated.');
+        const preview = answer || (diagrams.length > 0 ? 'Diagram response' : text);
         setMessages(prev => [...prev, {
           role: 'ai',
-          content: answer || 'No response was generated.',
+          content,
           citations: Array.isArray(res?.data?.citations) ? res.data.citations : [],
           diagrams
         }]);
 
         await touchChatSession(effectiveSessionId, {
           lastMessageAt: new Date().toISOString(),
-          lastMessagePreview: answer || text,
+          lastMessagePreview: preview,
         });
         setSessionsVersion((v) => v + 1);
       } catch (err) {
@@ -165,7 +168,7 @@ export default function ChatWindow({ user }) {
                 {m.role === 'human' ? (
                   <p className="text-sm leading-relaxed whitespace-pre-wrap">{m.content}</p>
                 ) : (
-                  <MarkdownRenderer content={m.content} citations={m.citations} />
+                  <MarkdownRenderer content={m.content} citations={m.citations} diagrams={m.diagrams || []} />
                 )}
               </div>
             </div>

@@ -1,5 +1,4 @@
 from datetime import datetime
-from json import load
 import os
 import re
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -77,36 +76,117 @@ class DataIngestor:
         
         return response.content
     
-    def _extract_plantuml_from_text(self, text: str):
-        """Returns the first @startuml...@enduml block found, or None."""
-        match = re.search(r"(@startuml[\s\S]*?@enduml)", text, re.IGNORECASE)
-        return match.group(1).strip() if match else None
+    def _extract_plantuml_blocks(self, text: str) -> list[str]:
+        return [
+            match.group(1).strip()
+            for match in re.finditer(r"(@startuml[\s\S]*?@enduml)", text, re.IGNORECASE)
+        ]
 
-    def _extract_mermaid_from_text(self, text: str):
-        """Returns the first ```mermaid...``` block found, or None."""
-        match = re.search(r"```mermaid\s*([\s\S]*?)```", text)
-        return match.group(1).strip() if match else None
-    
-    def _tag_diagram_chunks_(self,chunks:list) -> list:
-        for chunk in chunks:
-            text = chunk.page_content
-            
-            puml_code = self._extract_plantuml_from_text(text)
-            
-            if puml_code:
-                chunk.metadata["content_type"] = "plantuml"
-                chunk.metadata["diagram_code"] = puml_code
-                chunk.metadata["diagram_title"] = self._extract_puml_title(puml_code)
-                
-                
-            mermaid_code = self._extract_mermaid_from_text(text)
-            
-            if mermaid_code:
-                chunk.metadata["content_type"] = "mermaid"
-                chunk.metadata["diagram_code"] = mermaid_code
-                chunk.metadata["diagram_title"] = chunk.metadata.get("source_name", "Diagram")
+    def _extract_mermaid_blocks(self, text: str) -> list[str]:
+        return [
+            match.group(1).strip()
+            for match in re.finditer(r"```mermaid\s*([\s\S]*?)```", text, re.IGNORECASE)
+        ]
 
-        return chunks
+    def _looks_like_raw_mermaid(self, text: str) -> bool:
+        stripped = str(text or "").strip()
+        if not stripped:
+            return False
+        mermaid_starters = (
+            "graph ",
+            "flowchart ",
+            "sequenceDiagram",
+            "classDiagram",
+            "stateDiagram",
+            "erDiagram",
+            "journey",
+            "gantt",
+            "pie ",
+            "mindmap",
+            "timeline",
+            "gitGraph",
+            "requirementDiagram",
+            "c4Context",
+            "c4Container",
+            "c4Component",
+            "c4Dynamic",
+            "c4Deployment",
+        )
+        return stripped.startswith(mermaid_starters)
+
+    def _strip_diagram_blocks(self, text: str) -> str:
+        without_puml = re.sub(r"@startuml[\s\S]*?@enduml", " ", text, flags=re.IGNORECASE)
+        without_mermaid = re.sub(r"```mermaid\s*[\s\S]*?```", " ", without_puml, flags=re.IGNORECASE)
+        return re.sub(r"\n{3,}", "\n\n", without_mermaid).strip()
+
+    def _sanitize_metadata(self, metadata: dict) -> dict:
+        return {key: value for key, value in metadata.items() if value is not None}
+
+    def _build_diagram_docs(self, docs: list[Document], file_name: str, ext: str, user_dept: str, upload_time: str) -> list[Document]:
+        diagram_docs = []
+
+        for source_doc in docs:
+            page = (getattr(source_doc, "metadata", {}) or {}).get("page")
+            raw_text = self._clean_doc_text(source_doc.page_content)
+
+            plantuml_blocks = self._extract_plantuml_blocks(raw_text)
+            mermaid_blocks = self._extract_mermaid_blocks(raw_text)
+
+            if ext in {".mmd", ".mermaid"} and self._looks_like_raw_mermaid(raw_text):
+                mermaid_blocks = mermaid_blocks or [raw_text.strip()]
+
+            for idx, code in enumerate(plantuml_blocks, start=1):
+                title = self._extract_puml_title(code)
+                diagram_docs.append(Document(
+                    page_content=(
+                        f"Diagram title: {title}\n"
+                        f"Diagram type: PlantUML\n"
+                        f"Source file: {file_name}\n"
+                        f"{code}"
+                    ),
+                    metadata=self._sanitize_metadata({
+                        "page": page,
+                        "content_type": "plantuml",
+                        "diagram_code": code,
+                        "diagram_title": title,
+                        "diagram_index": idx,
+                        "source_name": file_name,
+                        "file_path": "",
+                        "ingested_at": upload_time,
+                        "status": "pending",
+                        "department": user_dept,
+                        "version": 1.0,
+                    })
+                ))
+
+            for idx, code in enumerate(mermaid_blocks, start=1):
+                title = f"{file_name} Mermaid {idx}" if len(mermaid_blocks) > 1 else file_name
+                diagram_docs.append(Document(
+                    page_content=(
+                        f"Diagram title: {title}\n"
+                        f"Diagram type: Mermaid\n"
+                        f"Source file: {file_name}\n"
+                        f"{code}"
+                    ),
+                    metadata=self._sanitize_metadata({
+                        "page": page,
+                        "content_type": "mermaid",
+                        "diagram_code": code,
+                        "diagram_title": title,
+                        "diagram_index": idx,
+                        "source_name": file_name,
+                        "file_path": "",
+                        "ingested_at": upload_time,
+                        "status": "pending",
+                        "department": user_dept,
+                        "version": 1.0,
+                    })
+                ))
+
+            cleaned_text = self._strip_diagram_blocks(raw_text)
+            source_doc.page_content = cleaned_text or raw_text
+
+        return diagram_docs
     
     def _extract_puml_title(self, code: str) -> str:
         match = re.search(r"title\s+(.+)", code)
@@ -155,7 +235,7 @@ class DataIngestor:
                 else:
                     print(f"📄 Text-based PDF detected. Using fast extraction.")
                     final_docs = raw_docs
-            elif ext in ['.txt', '.md' , '.puml']:
+            elif ext in ['.txt', '.md', '.puml', '.mmd', '.mermaid']:
                 try:
                     loader = TextLoader(filePath,encoding="utf-8")
                     final_docs = loader.load()
@@ -171,6 +251,7 @@ class DataIngestor:
             for doc in final_docs:
                 doc.page_content = self._clean_doc_text(doc.page_content)
 
+            diagram_docs = self._build_diagram_docs(final_docs, file_name, ext, user_dept, upload_time)
             chunks = self.spliters.split_documents(final_docs)
 
             for chunk in chunks:
@@ -180,12 +261,13 @@ class DataIngestor:
                 chunk.metadata["status"] = "pending"
                 chunk.metadata["department"] = user_dept
                 chunk.metadata["version"] = 1.0
-                
-                
-            chunks = self._tag_diagram_chunks_(chunks)
-                
+                chunk.metadata = self._sanitize_metadata(chunk.metadata)
 
-            return chunks   
+            for diagram_doc in diagram_docs:
+                diagram_doc.metadata["file_path"] = filePath
+                diagram_doc.metadata = self._sanitize_metadata(diagram_doc.metadata)
+
+            return chunks + diagram_docs
 
         except Exception as e:
             print("Exception Occurs while ingestion documents:", e)

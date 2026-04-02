@@ -18,7 +18,7 @@ from langchain.schema import Document
 from dotenv import load_dotenv
 from ingestor import DataIngestor
 from overrides import override
-from diagram_utils import extract_diagrams_from_docs,is_diagram_question
+from diagram_utils import detect_diagram_request_type, extract_diagrams_from_docs
 
 
 
@@ -420,6 +420,111 @@ def _normalize_user_text(text: str) -> str:
     return re.sub(r"\s+", " ", lowered).strip()
 
 
+def _build_doc_level_citations(docs: List[Document]):
+    citations = []
+    seen = set()
+
+    for index, doc in enumerate(docs, start=1):
+        meta = getattr(doc, "metadata", {}) or {}
+        source_name = meta.get("source_name") or meta.get("source") or "Unknown source"
+        page = meta.get("page")
+        snippet = meta.get("diagram_title") or str(getattr(doc, "page_content", "") or "")[:200].strip()
+        dedupe_key = (source_name, meta.get("content_type"), meta.get("diagram_index"), page)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        citations.append({
+            "index": len(citations) + 1,
+            "sourceName": source_name,
+            "page": page,
+            "snippet": snippet,
+        })
+
+    return citations
+
+
+def _merge_diagram_request_type(raw_type, standalone_type):
+    priority = {
+        None: 0,
+        "all": 1,
+        "mermaid": 2,
+        "plantuml": 2,
+    }
+    if priority.get(standalone_type, 0) > priority.get(raw_type, 0):
+        return standalone_type
+    return raw_type
+
+
+def _filter_diagrams_by_type(diagrams: list, requested_type):
+    if requested_type in (None, "all"):
+        return diagrams
+    return [diagram for diagram in diagrams if diagram.get("type") == requested_type]
+
+
+_DIAGRAM_QUERY_STOPWORDS = {
+    "show", "me", "the", "a", "an", "for", "of", "to", "please", "diagram",
+    "flow", "chart", "render", "display", "give", "with", "and", "that",
+    "this", "plantuml", "puml", "uml", "mermaid", "sequence", "architecture",
+}
+
+
+def _title_match_tokens(text: str) -> set[str]:
+    tokens = re.findall(r"[a-z0-9]+", str(text or "").lower())
+    return {
+        token for token in tokens
+        if len(token) > 2 and token not in _DIAGRAM_QUERY_STOPWORDS
+    }
+
+
+def _filter_diagrams_by_title_match(diagrams: list, *queries: str):
+    if len(diagrams) <= 1:
+        return diagrams
+
+    query_tokens = set()
+    for query in queries:
+        query_tokens |= _title_match_tokens(query)
+
+    if not query_tokens:
+        return diagrams
+
+    scored = []
+    for diagram in diagrams:
+        title_tokens = _title_match_tokens(diagram.get("title", ""))
+        score = len(query_tokens & title_tokens)
+        scored.append((score, diagram))
+
+    best_score = max((score for score, _ in scored), default=0)
+    if best_score <= 0:
+        return diagrams
+
+    best_diagrams = [diagram for score, diagram in scored if score == best_score]
+    if len(best_diagrams) == len(diagrams):
+        return diagrams
+
+    return best_diagrams
+
+
+def _filter_diagram_docs_by_selected(diagram_docs: List[Document], selected_diagrams: list):
+    selected_keys = {
+        (
+            diagram.get("sourceName"),
+            diagram.get("type"),
+            diagram.get("title"),
+            diagram.get("diagramIndex"),
+        )
+        for diagram in selected_diagrams
+    }
+    return [
+        doc for doc in diagram_docs
+        if (
+            (getattr(doc, "metadata", {}) or {}).get("source_name"),
+            (getattr(doc, "metadata", {}) or {}).get("content_type"),
+            (getattr(doc, "metadata", {}) or {}).get("diagram_title"),
+            (getattr(doc, "metadata", {}) or {}).get("diagram_index"),
+        ) in selected_keys
+    ]
+
+
 def _detect_small_talk_intent(text: str) -> str | None:
     normalized = _normalize_user_text(text)
     if not normalized:
@@ -576,6 +681,26 @@ class DeepContextEngine:
         self.vector_db = self._create_vector_db()
         return self.vector_db
 
+    def _fetch_diagram_docs_for_sources(self, vector_db, user_dept: str, source_names: set[str]) -> List[Document]:
+        if not source_names:
+            return []
+
+        snapshot = vector_db.get(where={"department": user_dept})
+        documents = snapshot.get("documents", [])
+        metadatas = snapshot.get("metadatas", [])
+
+        diagram_docs = []
+        for text, meta in zip(documents, metadatas):
+            if not isinstance(meta, dict):
+                continue
+            if meta.get("source_name") not in source_names:
+                continue
+            if meta.get("content_type") not in {"plantuml", "mermaid"}:
+                continue
+            diagram_docs.append(Document(page_content=text, metadata=meta))
+
+        return diagram_docs
+
     def fresh_reader(self):
         """
         Create a fresh Chroma reader while reusing the loaded embedding model and LLM.
@@ -622,7 +747,7 @@ class DeepContextEngine:
             chain = contextualize_q_prompt | self.llm
             response = chain.invoke({
                 "input": user_question,
-                "chat_history": safe_history
+                "chat-history": safe_history
             })
             candidate = response.content.strip()
 
@@ -649,7 +774,8 @@ class DeepContextEngine:
                 "answer": _SMALL_TALK_RESPONSES[small_talk_intent],
                 "retrieved": False,
                 "intent": small_talk_intent,
-                "citations": []
+                "citations": [],
+                "diagrams":[]
             }
 
         # Step 1: Reload Chroma to pick up freshly ingested docs
@@ -676,7 +802,8 @@ class DeepContextEngine:
             return {
                 "answer": "I'm sorry, I couldn't find any relevant information in the documents for your question.",
                 "retrieved": False,
-                "citations": []
+                "citations": [],
+                "diagrams":[]
             }
         print(valid_docs)
         
@@ -684,13 +811,7 @@ class DeepContextEngine:
             Diagram Detection Logic
         """
         diagrams = []
-        has_diagram_chunks = any(
-            (getattr(d, "metadata", {}) or {}).get("content_type") in ("plantuml", "mermaid")
-            for d in valid_docs
-        )
-
-        if is_diagram_question(user_question) or has_diagram_chunks:
-            diagrams = extract_diagrams_from_docs(valid_docs)
+        diagram_docs = []
                     
         top_retrieval_preview = [
             {
@@ -709,6 +830,53 @@ class DeepContextEngine:
         # Step 5: Get standalone question (safe, with fallback)
         standalone_q = self._get_standalone_question(user_question, safe_history)
         print(f"✅ standalone_q: {standalone_q}")
+
+        raw_diagram_request_type = detect_diagram_request_type(user_question)
+        standalone_diagram_request_type = detect_diagram_request_type(standalone_q)
+        requested_diagram_type = _merge_diagram_request_type(
+            raw_diagram_request_type,
+            standalone_diagram_request_type,
+        )
+        is_diagram_request = requested_diagram_type is not None
+
+        if is_diagram_request:
+            source_names = {
+                (getattr(doc, "metadata", {}) or {}).get("source_name")
+                for doc in valid_docs
+                if (getattr(doc, "metadata", {}) or {}).get("source_name")
+            }
+            diagram_docs = self._fetch_diagram_docs_for_sources(vector_db, user_dept, source_names)
+            diagrams = _filter_diagrams_by_type(
+                extract_diagrams_from_docs(diagram_docs),
+                requested_diagram_type,
+            )
+            diagrams = _filter_diagrams_by_title_match(
+                diagrams,
+                standalone_q,
+                user_question,
+            )
+            diagram_docs = _filter_diagram_docs_by_selected(diagram_docs, diagrams) if diagrams else diagram_docs
+
+        if is_diagram_request and diagrams:
+            return {
+                "answer": "",
+                "retrieved": True,
+                "citations": _build_doc_level_citations(diagram_docs or valid_docs),
+                "diagrams": diagrams,
+            }
+
+        if is_diagram_request and not diagrams:
+            diagram_type_label = {
+                "mermaid": "Mermaid",
+                "plantuml": "PlantUML",
+                "all": "diagram",
+            }.get(requested_diagram_type, "diagram")
+            return {
+                "answer": f"I couldn't find a {diagram_type_label} in the retrieved documents for this question.",
+                "retrieved": True,
+                "citations": _build_doc_level_citations(valid_docs),
+                "diagrams": [],
+            }
 
         # Step 6: Answer using ONLY the retrieved docs — no chat history here
         system_prompt = (

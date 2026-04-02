@@ -1,6 +1,7 @@
 # backend/diagram_utils.py
 
-import zlib, re
+import zlib
+from typing import Literal
 
 def _encode6bit(b):
     if b < 10: return chr(48 + b)
@@ -49,7 +50,15 @@ def extract_diagrams_from_docs(docs: list) -> list:
         source = meta.get("source_name", "")
         title = meta.get("diagram_title", source)
 
-        if not diagram_code or source in seen:
+        diagram_index = meta.get("diagram_index")
+        diagram_key = (
+            source,
+            content_type,
+            diagram_index,
+            diagram_code[:80],
+        )
+
+        if not diagram_code or diagram_key in seen:
             continue
 
         if content_type == "plantuml":
@@ -57,27 +66,49 @@ def extract_diagrams_from_docs(docs: list) -> list:
                 "type": "plantuml",
                 "code": diagram_code,
                 "title": title,
+                "diagramIndex": diagram_index,
                 "imageUrl": plantuml_image_url(diagram_code),
                 "sourceName": source,
             })
-            seen.add(source)
+            seen.add(diagram_key)
 
         elif content_type == "mermaid":
             diagrams.append({
                 "type": "mermaid",
                 "code": diagram_code,
                 "title": title,
+                "diagramIndex": diagram_index,
                 "sourceName": source,
             })
-            seen.add(source)
+            seen.add(diagram_key)
 
     return diagrams
 
-_DIAGRAM_KEYWORDS = {
-    "flow", "diagram", "sequence", "process", "steps",
-    "architecture", "chart", "uml", "walkthrough", "explain the flow"
+DiagramRequestType = Literal["mermaid", "plantuml", "all", None]
+
+_GENERIC_DIAGRAM_KEYWORDS = {
+    "diagram", "flowchart", "sequence diagram", "architecture diagram",
+    "visual", "draw", "show the flow", "show the diagram",
+    "show architecture", "show sequence", "show process flow",
+    "flow diagram",
 }
 
-def is_diagram_question(question: str) -> bool:
-    lowered = question.lower()
-    return any(kw in lowered for kw in _DIAGRAM_KEYWORDS)
+
+def detect_diagram_request_type(question: str) -> DiagramRequestType:
+    lowered = str(question or "").lower()
+    if not lowered.strip():
+        return None
+
+    if "mermaid" in lowered:
+        return "mermaid"
+
+    if "plantuml" in lowered or "puml" in lowered:
+        return "plantuml"
+
+    if "uml" in lowered:
+        return "plantuml"
+
+    if any(keyword in lowered for keyword in _GENERIC_DIAGRAM_KEYWORDS):
+        return "all"
+
+    return None
