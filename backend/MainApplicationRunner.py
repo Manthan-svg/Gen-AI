@@ -96,7 +96,7 @@ async def get_job_status(job_id: str):
     if result.state == "SUCCESS":
         status = "completed"
     elif result.state == "FAILURE":
-        status = "failed"
+        status = "failed"   
     else:
         status = "processing"
 

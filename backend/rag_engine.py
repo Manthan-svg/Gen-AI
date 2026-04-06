@@ -743,6 +743,15 @@ class DeepContextEngine:
             "You are a helpful assistant. Convert the latest user question into a "
             "self-contained standalone question using prior context if needed. "
             "Return ONLY the question. No prefixes, no explanation, no extra words."
+            
+            "Rewrite the user question in one standalone question. No prefixes, no explanation, no extra words."
+            "Rules: "
+            "1. The output must an question instead of answer."
+            "2. Output must end with a ?"
+            "3. Do not answer using facts from chat history."
+            "4. Do not add prefixes, quotes, explanations, or markdown."
+            "5. If the latest user turn is already standalone, return it as a single clean question."
+
         )
 
         contextualize_q_prompt = ChatPromptTemplate.from_messages([
