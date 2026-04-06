@@ -7,15 +7,7 @@ def initDB():
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE,
-                hashed_password TEXT,
-                department TEXT 
-            )
-        ''')
+    
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS chat_history (

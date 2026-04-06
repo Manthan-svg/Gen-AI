@@ -122,7 +122,7 @@ class DataIngestor:
     def _sanitize_metadata(self, metadata: dict) -> dict:
         return {key: value for key, value in metadata.items() if value is not None}
 
-    def _build_diagram_docs(self, docs: list[Document], file_name: str, ext: str, user_dept: str, upload_time: str) -> list[Document]:
+    def _build_diagram_docs(self, docs: list[Document], file_name: str, ext: str, upload_time: str) -> list[Document]:
         diagram_docs = []
 
         for source_doc in docs:
@@ -154,7 +154,6 @@ class DataIngestor:
                         "file_path": "",
                         "ingested_at": upload_time,
                         "status": "pending",
-                        "department": user_dept,
                         "version": 1.0,
                     })
                 ))
@@ -178,7 +177,6 @@ class DataIngestor:
                         "file_path": "",
                         "ingested_at": upload_time,
                         "status": "pending",
-                        "department": user_dept,
                         "version": 1.0,
                     })
                 ))
@@ -193,7 +191,7 @@ class DataIngestor:
         return match.group(1).strip() if match else "Untitled diagram"
             
 
-    def ingestion_documents(self, filePath: str, user_dept: str = "general"):
+    def ingestion_documents(self, filePath: str):
         ext = os.path.splitext(filePath)[1].lower()      
         file_name = os.path.basename(filePath)           
 
@@ -251,7 +249,7 @@ class DataIngestor:
             for doc in final_docs:
                 doc.page_content = self._clean_doc_text(doc.page_content)
 
-            diagram_docs = self._build_diagram_docs(final_docs, file_name, ext, user_dept, upload_time)
+            diagram_docs = self._build_diagram_docs(final_docs, file_name, ext, upload_time)
             chunks = self.spliters.split_documents(final_docs)
 
             for chunk in chunks:
@@ -259,7 +257,6 @@ class DataIngestor:
                 chunk.metadata["file_path"] = filePath
                 chunk.metadata["ingested_at"] = upload_time
                 chunk.metadata["status"] = "pending"
-                chunk.metadata["department"] = user_dept
                 chunk.metadata["version"] = 1.0
                 chunk.metadata = self._sanitize_metadata(chunk.metadata)
 

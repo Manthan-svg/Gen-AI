@@ -10,7 +10,7 @@ class Supervisor:
         self.ingest = DataIngestor()
         self.meeting_ai = MeetingAgent() # Initialize once
         
-    def supervisor(self, file_path: str, user_dept: str):
+    def supervisor(self, file_path: str):
         file_name = os.path.basename(file_path).lower()
         vector_db = self.engine.get_vector_db(refresh=True)
         
@@ -20,7 +20,7 @@ class Supervisor:
             
             # Use your ingestor to get the full text (not chunks)
             # Assuming ingestion_documents returns a list of LangChain Documents
-            docs = self.ingest.ingestion_documents(file_path, user_dept)
+            docs = self.ingest.ingestion_documents(file_path)
             if not docs:
                 raise RuntimeError(f"No content extracted from meeting file: {file_name}")
             full_text = " ".join([d.page_content for d in docs])
@@ -32,7 +32,6 @@ class Supervisor:
             vector_db.add_texts(
                 texts=[summary_report],
                 metadatas=[{
-                    "department": user_dept, 
                     "type": "meeting_summary", 
                     "source_name": file_name,
                     "ingested_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -41,11 +40,11 @@ class Supervisor:
             )
             
             self.engine._try_persist()
-            dept_snapshot = vector_db.get(where={"department": user_dept})
+            dept_snapshot = vector_db.get()
             total_docs = len(dept_snapshot.get("documents", []))
             print(
-                f"📦 [WRITE] Meeting summary stored | dept={user_dept} | "
-                f"total_docs={total_docs} | sources={[file_name]}"
+                f"📦 [WRITE] Meeting summary stored | total_docs={total_docs} | "
+                f"sources={[file_name]}"
             )
             print(f"✅ [SUCCESS] Meeting summary saved to ChromaDB.")
             return "Meeting Processed"
@@ -53,7 +52,7 @@ class Supervisor:
         # --- BRANCH 2: STANDARD AUDIT LOGIC (Your existing code) ---
         else:
             print(f"🚀 [MODE: AUDIT] Starting High-Speed Audit: {file_name}")
-            new_chunks = self.ingest.ingestion_documents(file_path, user_dept)
+            new_chunks = self.ingest.ingestion_documents(file_path)
             if not new_chunks:
                 raise RuntimeError(f"No content extracted from file: {file_name}")
 
@@ -64,7 +63,6 @@ class Supervisor:
                 current_batch = new_chunks[i : i + batch_size]
                 for chunk in current_batch:
                     chunk.metadata.update({
-                        "department": user_dept,
                         "source_name": file_name,
                         "ingested_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "status": "verified",
@@ -73,7 +71,7 @@ class Supervisor:
 
             vector_db.add_documents(processed_chunks)
             self.engine._try_persist()
-            dept_snapshot = vector_db.get(where={"department": user_dept})
+            dept_snapshot = vector_db.get()
             total_docs = len(dept_snapshot.get("documents", []))
             written_sources = sorted({
                 chunk.metadata.get("source_name", file_name)
@@ -81,8 +79,7 @@ class Supervisor:
                 if getattr(chunk, "metadata", None)
             })
             print(
-                f"📦 [WRITE] Audit chunks stored | dept={user_dept} | "
-                f"chunks_written={len(processed_chunks)} | total_docs={total_docs} | "
+                f"📦 [WRITE] Audit chunks stored | chunks_written={len(processed_chunks)} | total_docs={total_docs} | "
                 f"sources={written_sources}"
             )
             return processed_chunks

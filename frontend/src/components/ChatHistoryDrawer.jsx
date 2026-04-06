@@ -108,7 +108,7 @@ export default function ChatHistoryDrawer({
       setUploadStatus('Upload failed.');
     } finally {
       setUploading(false);
-      window.location.href = "/app";
+      window.location.href = "/";
     }
   };
 

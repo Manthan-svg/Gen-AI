@@ -18,7 +18,7 @@ app.conf.update(
 )
 
 @app.task(name="process_document_task")
-def process_document_task(file_source: str, user_dept: str, is_slack_upload: bool = False, slack_token: str = None):
+def process_document_task(file_source: str, is_slack_upload: bool = False, slack_token: str = None):
     os.makedirs(DATA_DIR, exist_ok=True)
 
     if is_slack_upload:
@@ -42,5 +42,5 @@ def process_document_task(file_source: str, user_dept: str, is_slack_upload: boo
         file_to_process = file_source
 
     supervisor = Supervisor()
-    supervisor.supervisor(file_to_process, user_dept)
+    supervisor.supervisor(file_to_process)
     return "Ingestion Complete"

@@ -1,12 +1,12 @@
 # DeepContext
 
-DeepContext is a department-aware enterprise knowledge assistant for internal documents. It ingests business files, stores department-scoped knowledge in ChromaDB, and answers questions through a secure chat UI with markdown rendering, source citations, and diagram support.
+DeepContext is an internal knowledge assistant for business documents. It ingests files into a shared ChromaDB knowledge base and answers questions through a chat UI with markdown rendering, citations, chat sessions, and diagram support.
 
 The current codebase combines:
 
-- JWT-based authentication with department scoping
+- direct app access with no login or JWT flow
 - asynchronous document ingestion with FastAPI, Celery, and Redis
-- hybrid retrieval using vector search plus BM25
+- shared retrieval across one knowledge base with no department filtering
 - OCR-style extraction for image-heavy content
 - persistent chat history and named chat sessions in SQLite
 - diagram extraction and rendering for Mermaid and PlantUML content
@@ -17,17 +17,15 @@ The current codebase combines:
 DeepContext is built for teams that need to:
 
 - upload internal documents into a searchable knowledge base
-- isolate retrieval results by department
-- ask natural-language questions against approved content
-- keep separate multi-session chat histories per user
+- ask natural-language questions across all uploaded content
+- keep separate multi-session chat histories in the UI
 - render AI answers with markdown, citations, and diagrams
 - ingest files from Slack with the same backend pipeline
 
 ## Key Capabilities
 
-- Department-scoped access control using JWT claims
 - FastAPI backend with Celery background ingestion jobs
-- ChromaDB knowledge storage with SQLite-backed users, chat history, and chat sessions
+- Shared ChromaDB knowledge storage with SQLite-backed chat history and chat sessions
 - Hybrid retrieval using sentence-transformer embeddings plus BM25 rank fusion
 - OCR-style vision extraction for scanned PDFs and image uploads
 - Meeting transcript summarization flow for files containing `meeting` or `transcript`
@@ -36,13 +34,13 @@ DeepContext is built for teams that need to:
 - Diagram-aware ingestion for Mermaid and PlantUML source content
 - Diagram-aware answers that can return rendered Mermaid or PlantUML diagrams directly
 - Lightweight small-talk handling for greetings, thanks, farewells, and help prompts
-- Chat history drawer with new-chat creation, per-session previews, and session deletion
+- Chat history drawer with new-chat creation, per-session previews, deletion, and upload flow
 
 ## How It Works
 
-### 1. Authentication and department scoping
+### 1. Direct access
 
-Users sign up or log in from the frontend. The backend stores users in SQLite and issues a JWT containing the username and department. That department value is used to scope both ingestion metadata and retrieval queries.
+The frontend loads the main application directly at `/`. There is no signup, login, token exchange, or protected routing. The system uses a shared anonymous chat/session model internally.
 
 ### 2. Document upload and background processing
 
@@ -71,7 +69,6 @@ Detected diagrams are stored as separate retrievable records alongside cleaned t
 
 DeepContext persists:
 
-- users in SQLite
 - chat history in SQLite
 - chat session metadata in SQLite
 - document chunks and diagram records in ChromaDB
@@ -84,7 +81,7 @@ When a user asks a question:
 - very short conversational prompts can be answered as small talk without retrieval
 - recent chat history is normalized for follow-up handling
 - the latest question may be rewritten into a standalone question
-- hybrid retrieval pulls department-scoped chunks from ChromaDB and BM25
+- hybrid retrieval searches the full shared ChromaDB corpus plus BM25 results
 - if the prompt asks for a diagram, relevant Mermaid or PlantUML records are returned directly
 - otherwise the LLM answers from retrieved context only
 - the answer is normalized into markdown
@@ -100,7 +97,6 @@ React Frontend
 FastAPI Backend
     |
     +--> SQLite
-    |      - users
     |      - chat_history
     |      - chat_sessions
     |
@@ -133,19 +129,16 @@ DeepContext/
 │   ├── celery_worker.py           # Background document processing
 │   ├── chat_history_manager.py    # SQLite-backed message history with citations/diagrams
 │   ├── chat_session_manager.py    # SQLite-backed chat session metadata
-│   ├── database.py                # SQLite schema initialization and migrations
+│   ├── database.py                # SQLite schema initialization
 │   ├── meeting_agent.py           # Meeting transcript summarization
-│   ├── auth.py                    # JWT and password helpers
-│   ├── auth_routes.py             # Signup and login routes
 │   └── requirements.txt
 └── frontend/
     ├── src/App.jsx
+    ├── src/main.jsx
     ├── src/components/ChatWindow.jsx
     ├── src/components/ChatHistoryDrawer.jsx
     ├── src/components/MarkdownRenderer.jsx
     ├── src/components/DiagramRenderer.jsx
-    ├── src/components/LoginComponent.jsx
-    ├── src/components/SignupComponent.jsx
     ├── src/utils/chatSessions.util.js
     ├── src/utils/api.util.js
     └── package.json
@@ -166,7 +159,7 @@ DeepContext/
 
 ## Diagram Support
 
-DeepContext now supports diagram-aware retrieval and UI rendering:
+DeepContext supports diagram-aware retrieval and UI rendering:
 
 - Mermaid diagrams are rendered client-side in the frontend
 - PlantUML diagrams are displayed through generated `plantuml.com` image URLs
@@ -182,7 +175,7 @@ Examples of supported asks:
 
 ## Chat Sessions and History
 
-Chat is no longer modeled as a single flat history per user. The current application supports multiple sessions per user, with:
+The current application supports multiple chat sessions, with:
 
 - explicit session creation
 - session titles
@@ -191,7 +184,7 @@ Chat is no longer modeled as a single flat history per user. The current applica
 - history retrieval per session
 - session deletion from the UI
 
-Older `chat_history`-only conversations are also synced into `chat_sessions` when needed.
+All sessions are stored under the shared internal username `anonymous`, since the app no longer tracks signed-in users.
 
 ## Technology Stack
 
@@ -234,8 +227,6 @@ Depending on your environment, you may also need these Python packages in additi
 
 - `pdf2image`
 - `Pillow`
-- `passlib[bcrypt]`
-- `python-jose`
 - `celery`
 - `redis`
 - `python-multipart`
@@ -248,6 +239,8 @@ Create a `.env` file for the backend with:
 ```env
 GROQ_API_KEY=your_groq_api_key
 SLACK_BOT_TOKEN=your_optional_slack_bot_token
+CHROMA_HOST=localhost
+CHROMA_PORT=8001
 ```
 
 `SLACK_BOT_TOKEN` is only required for Slack-based ingestion.
@@ -265,12 +258,18 @@ cd DeepContext
 
 ```bash
 cd backend
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-pip install pdf2image Pillow passlib[bcrypt] python-jose celery redis python-multipart overrides
+pip install pdf2image Pillow celery redis python-multipart overrides
 mkdir -p data
-python -c "from database import initDB; initDB()"
+python3 -c "from database import initDB; initDB()"
+```
+
+Start ChromaDB first so the API and Celery worker both talk to the same live vector store:
+
+```bash
+./start_chroma.sh
 ```
 
 Start the API:
@@ -311,27 +310,24 @@ The frontend expects the backend at `http://localhost:2020`.
 
 After all services are started:
 
-1. Open the frontend.
-2. Sign up or log in.
-3. Upload a supported document.
-4. Wait for the ingestion job to complete.
-5. Start a new chat or reopen an existing session.
-6. Ask document questions, including diagram-oriented prompts if relevant.
-7. Review citations, rendered diagrams, and document status in the UI.
+1. Open the frontend at `/`.
+2. Upload a supported document.
+3. Wait for the ingestion job to complete.
+4. Start a new chat or reopen an existing session.
+5. Ask document questions, including diagram-oriented prompts if relevant.
+6. Review citations, rendered diagrams, and document status in the UI.
 
 ## Core API Endpoints
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
-| `POST` | `/signup` | Register a new user |
-| `POST` | `/login` | Authenticate a user |
 | `POST` | `/upload` | Upload a document for background processing |
 | `GET` | `/job-status/{job_id}` | Check ingestion job status |
-| `GET` | `/retriveAllDocuments` | List department-visible ingested documents |
-| `GET` | `/chat-sessions` | List chat sessions for the current user |
+| `GET` | `/retriveAllDocuments` | List all ingested documents visible in the shared knowledge base |
+| `GET` | `/chat-sessions` | List chat sessions |
 | `POST` | `/chat-sessions` | Create a chat session |
 | `PATCH` | `/chat-sessions/{sessionId}` | Update title or preview metadata for a session |
-| `POST` | `/get-answer` | Ask a question against the department knowledge base |
+| `POST` | `/get-answer` | Ask a question against the shared knowledge base |
 | `POST` | `/get-history/{sessionId}` | Retrieve chat history for one session |
 | `POST` | `/delete-chat/{sessionId}` | Delete a session and its messages |
 | `POST` | `/slack/events` | Receive Slack file-share events |
@@ -359,7 +355,6 @@ DeepContext includes a Slack event endpoint for `file_shared` events. When confi
 
 - the backend fetches Slack file metadata
 - the file is downloaded with the bot token
-- the channel name is mapped to a department
 - the same Celery ingestion pipeline processes the file
 
 ## Current Limitations
@@ -367,21 +362,22 @@ DeepContext includes a Slack event endpoint for `file_shared` events. When confi
 - Embedded images inside otherwise text-based PDFs are still not deeply analyzed unless the PDF behaves like a scanned document.
 - PlantUML rendering depends on public `plantuml.com` image generation.
 - The embedding model must already exist in the local HuggingFace cache because retrieval is configured with `local_files_only=True`.
+- ChromaDB must be running as its own HTTP server for ingestion and retrieval to stay in sync without restarting the API.
 - SQLite is fine for local and lightweight use, but it is not ideal for larger concurrent production workloads.
-- Authentication secrets are still code-defined in parts of the backend and should be fully externalized before production use.
+- There is no user-level isolation right now. All retrieval happens across one shared knowledge base.
 - File validation, upload size limits, and stronger operational hardening are still needed.
 - The frontend is still pinned to a local backend URL instead of environment-based configuration.
 
 ## Production Hardening Ideas
 
-- move secrets to environment variables or a secrets manager
+- move configuration to environment-driven frontend and backend settings
 - replace SQLite with PostgreSQL
 - add object storage for uploaded documents
 - add file validation, size limits, and malware scanning
 - add structured logging, metrics, and health checks
 - containerize the API, worker, Redis, and frontend
 - add automated tests and CI/CD
-- expand authorization beyond department-only scoping
+- reintroduce access control only if multi-user isolation is needed again
 
 ## License
 

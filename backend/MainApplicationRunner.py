@@ -1,37 +1,26 @@
-from calendar import c
 from datetime import datetime
 import os
-from shlex import join
 import shutil
 import requests
 from fastapi import Request
 
-from auth import ALGORITHM, SECRET_KEY
-from jose import jwt
 from celery_worker import process_document_task
 from celery.result import AsyncResult
 from chat_history_manager import ChatHistroyManager
 from chat_session_manager import ChatSessionManager
 from database import initDB
 import supervisor
-from auth_routes import router as auth_router
 from fastapi import FastAPI,File,UploadFile,HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import BackgroundTasks
 from pydantic import BaseModel
-from fastapi import Depends
-from fastapi.security import OAuth2PasswordBearer
 
-from ingestor import DataIngestor
 from rag_engine import DeepContextEngine
 
 
 SLACK_BOT_TOKEN=os.getenv("SLACK_BOT_TOKEN")
 
 app = FastAPI(title="DeepContext API")
-app.include_router(auth_router,tags=["Authentication"])
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 origin = [
     "http://localhost:5173",
@@ -46,11 +35,7 @@ app.add_middleware(
     allow_headers=["*"],              # Allows all headers
 )
 
-processing_jobs = {}
-
-
 engine = DeepContextEngine()
-ingestor = DataIngestor()
 supervisor = supervisor.Supervisor()
 history_manager = ChatHistroyManager()
 session_manager = ChatSessionManager()
@@ -81,30 +66,8 @@ def run_server():
 def bootstrap_app():
     initDB()
 
-def get_current_user_dept(token: str = Depends(oauth2_scheme)):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        dept = payload.get("dept")
-        if dept is None:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return dept
-    except:
-        raise HTTPException(status_code=401, detail="Could not validate credentials")
-
-
-def get_current_user(token: str = Depends(oauth2_scheme)):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username = payload.get("sub")
-        dept = payload.get("dept")
-        if username is None or dept is None:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return {"username": username, "department": dept}
-    except:
-        raise HTTPException(status_code=401, detail="Could not validate credentials")
-
 @app.post("/upload")
-def upload_docs(background_tasks:BackgroundTasks ,file:UploadFile = File(...),user_dept:str = Depends(get_current_user_dept)):
+def upload_docs(file: UploadFile = File(...)):
     
     try:
         file_path = f"./data/{file.filename}"
@@ -112,7 +75,7 @@ def upload_docs(background_tasks:BackgroundTasks ,file:UploadFile = File(...),us
             shutil.copyfileobj(file.file,buffer)
             
         
-        task = process_document_task.delay(file_path,user_dept)
+        task = process_document_task.delay(file_path)
         
         return {
             "message": "Upload successful. Audit started in background.",
@@ -144,10 +107,10 @@ async def get_job_status(job_id: str):
     }
  
 @app.get("/retriveAllDocuments")
-def getAllDocuments(user_dept: str = Depends(get_current_user_dept)):
+def getAllDocuments():
     try:
         vector_db = engine.get_vector_db(refresh=True)
-        data = vector_db.get(where={"department":user_dept})
+        data = vector_db.get()
         
         docs = []
         seen = set()
@@ -169,20 +132,57 @@ def getAllDocuments(user_dept: str = Depends(get_current_user_dept)):
                 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) 
+    
+
+@app.delete("/deleteDocument/{sourceName}")
+def deleteDocument(sourceName: str):
+    try:
+        vector_db = engine.get_vector_db(refresh=True)
+        data = vector_db.get()
+
+        ids = data.get("ids", [])
+        metadatas = data.get("metadatas", [])
+        normalized_source_name = sourceName.strip().casefold()
+
+        matching_ids = [
+            doc_id
+            for doc_id, metadata in zip(ids, metadatas)
+            if isinstance(metadata, dict)
+            and str(metadata.get("source_name", "")).strip().casefold() == normalized_source_name
+        ]
+
+        if not matching_ids:
+            raise HTTPException(status_code=404, detail=f"Document not found: {sourceName}")
+
+        vector_db.delete(ids=matching_ids)
+        engine._try_persist()
+        
+        return {
+            "message":"Document deleted successfully.",
+            "sourceName":sourceName,
+            "deletedCount": len(matching_ids),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete document: {str(e)}")
+        
+        
 
 
 @app.get("/chat-sessions")
-def get_chat_sessions(current_user: dict = Depends(get_current_user)):
+def get_chat_sessions():
     return {
         "message": "Success",
-        "sessions": session_manager.list_sessions(current_user["username"])
+        "sessions": session_manager.list_sessions("anonymous")
     }
 
 
 @app.post("/chat-sessions")
-def create_chat_session(payload: ChatSessionCreateRequest, current_user: dict = Depends(get_current_user)):
+def create_chat_session(payload: ChatSessionCreateRequest):
     session = session_manager.create_session(
-        current_user["username"],
+        "anonymous",
         payload.sessionId,
         payload.title or "New Chat",
     )
@@ -193,9 +193,9 @@ def create_chat_session(payload: ChatSessionCreateRequest, current_user: dict = 
 
 
 @app.patch("/chat-sessions/{sessionId}")
-def update_chat_session(sessionId: str, payload: ChatSessionUpdateRequest, current_user: dict = Depends(get_current_user)):
+def update_chat_session(sessionId: str, payload: ChatSessionUpdateRequest):
     session = session_manager.update_session(
-        current_user["username"],
+        "anonymous",
         sessionId,
         title=payload.title,
         last_message_at=payload.lastMessageAt,
@@ -216,12 +216,11 @@ _SAVE_SKIP_PHRASES = [
 ]
 
 @app.post("/get-answer")
-def get_answer(question: UserRequest, current_user: dict = Depends(get_current_user)):
-    user_dept = current_user["department"]
-    username = current_user["username"]
+def get_answer(question: UserRequest):
+    username = "anonymous"
     session_manager.ensure_session(username, question.sessionId)
     history = history_manager.get_history(question.sessionId)
-    result = engine.get_answer(question.question, user_dept, history)
+    result = engine.get_answer(question.question, history)
 
     answer_text = result["answer"]
     citations = result.get("citations", [])
@@ -261,11 +260,7 @@ def get_answer(question: UserRequest, current_user: dict = Depends(get_current_u
     }
      
 @app.post("/get-history/{sessionId}")
-async def getAllChatHistory(sessionId:str, current_user: dict = Depends(get_current_user)):
-    if not session_manager.get_session(current_user["username"], sessionId):
-        session_manager.list_sessions(current_user["username"])
-    if not session_manager.get_session(current_user["username"], sessionId):
-        raise HTTPException(status_code=404, detail="Chat session not found")
+async def getAllChatHistory(sessionId:str):
     chatHistory = history_manager.get_history(sessionId)
     if len(chatHistory) > 0:
         return {
@@ -279,8 +274,8 @@ async def getAllChatHistory(sessionId:str, current_user: dict = Depends(get_curr
     
     
 @app.post("/delete-chat/{sessionId}")
-async def deleteChatBySessionId(sessionId:str, current_user: dict = Depends(get_current_user)):
-    session_manager.delete_session(current_user["username"], sessionId)
+async def deleteChatBySessionId(sessionId:str):
+    session_manager.delete_session("anonymous", sessionId)
     
     return {
         "message":"Chat Deleted Successfully.."
@@ -317,22 +312,11 @@ async def slack_events(request: Request):
             public_shares = shares.get("public", {})
             private_shares = shares.get("private", {})
             
-            # Extract first channel ID available
             all_shares = {**public_shares, **private_shares}
-            channel_id = list(all_shares.keys())[0] if all_shares else None
-
-            if channel_id:
-                # Get the Department (Channel Name)
-                channel_info = requests.get(
-                    f"https://slack.com/api/conversations.info?channel={channel_id}",
-                    headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
-                ).json()
-                
-                slack_dept = channel_info["channel"]["name"].capitalize() if channel_info.get("ok") else "General"
+            if all_shares:
                 # Pass to Celery
                 process_document_task.delay(
                     file_url, 
-                    user_dept=slack_dept, 
                     is_slack_upload=True,
                     slack_token=SLACK_BOT_TOKEN
                 )

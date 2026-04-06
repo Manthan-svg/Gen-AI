@@ -20,9 +20,8 @@ from ingestor import DataIngestor
 from overrides import override
 from diagram_utils import detect_diagram_request_type, extract_diagrams_from_docs
 
-
-
-load_dotenv()
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(CURRENT_DIR, ".env"))
 
 
 class NoOpProductTelemetry(ProductTelemetryClient):
@@ -42,10 +41,10 @@ _GARBAGE_PATTERNS = [
 ]
 
 _SMALL_TALK_RESPONSES = {
-    "greeting": "Hello! I can help you with questions about your uploaded department documents. Ask me anything from the knowledge base.",
+    "greeting": "Hello! I can help you with questions about your uploaded documents. Ask me anything from the knowledge base.",
     "thanks": "You're welcome. If you need anything from the uploaded documents, ask away.",
     "farewell": "Goodbye! Come back anytime if you want help with the knowledge base.",
-    "assistant_help": "I can answer questions using your uploaded department documents, summarize relevant information, and help you find specific details from the knowledge base.",
+    "assistant_help": "I can answer questions using your uploaded documents, summarize relevant information, and help you find specific details from the knowledge base.",
 }
 
 _GREETING_PHRASES = {
@@ -477,15 +476,17 @@ def _title_match_tokens(text: str) -> set[str]:
 
 
 def _filter_diagrams_by_title_match(diagrams: list, *queries: str):
-    if len(diagrams) <= 1:
-        return diagrams
-
     query_tokens = set()
     for query in queries:
         query_tokens |= _title_match_tokens(query)
 
     if not query_tokens:
         return diagrams
+
+    if len(diagrams) == 1:
+        diagram = diagrams[0]
+        title_tokens = _title_match_tokens(diagram.get("title", ""))
+        return diagrams if (query_tokens & title_tokens) else []
 
     scored = []
     for diagram in diagrams:
@@ -495,7 +496,7 @@ def _filter_diagrams_by_title_match(diagrams: list, *queries: str):
 
     best_score = max((score for score, _ in scored), default=0)
     if best_score <= 0:
-        return diagrams
+        return []
 
     best_diagrams = [diagram for score, diagram in scored if score == best_score]
     if len(best_diagrams) == len(diagrams):
@@ -559,9 +560,11 @@ class DeepContextEngine:
             cache_folder=os.path.expanduser("~/.cache/huggingface/hub"),
         )
 
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        self.db_path = os.path.join(current_dir, "chroma_db")
-        self.collection_name = "deepcontext"
+        self.db_path = os.path.join(CURRENT_DIR, "chroma_db")
+        self.collection_name = os.getenv("CHROMA_COLLECTION_NAME", "deepcontext")
+        self.chroma_host = os.getenv("CHROMA_HOST", "localhost")
+        self.chroma_port = int(os.getenv("CHROMA_PORT", "8001"))
+        self.chroma_ssl = os.getenv("CHROMA_SSL", "false").lower() == "true"
 
         self.vector_db = self._create_vector_db()
 
@@ -595,7 +598,7 @@ class DeepContextEngine:
 
         return result
     
-    def _hybrid_search(self, query: str, user_dept: str, k: int = 5) -> List[Document]:
+    def _hybrid_search(self, query: str, k: int = 5) -> List[Document]:
         """
         Combines ChromaDB semantic search + BM25 lexical search
         using Reciprocal Rank Fusion (RRF) to merge results.
@@ -603,15 +606,15 @@ class DeepContextEngine:
 
         # ── 1. Semantic Search (your existing ChromaDB) ──────────────────
         semantic_results = self.vector_db.similarity_search_with_score(
-            query, k=10, filter={"department": user_dept}
+            query, k=10
         )
         # Lower score = better in Chroma (distance metric)
         semantic_docs = [
             (doc, score) for doc, score in semantic_results if score < 3.2
         ]
 
-        # ── 2. Fetch All Dept Docs for BM25 ──────────────────────────────
-        all_dept_data = self.vector_db.get(where={"department": user_dept})
+        # ── 2. Fetch all docs for BM25 ───────────────────────────────────
+        all_dept_data = self.vector_db.get()
         all_texts     = all_dept_data.get("documents", [])
         all_metadatas = all_dept_data.get("metadatas", [])
 
@@ -661,9 +664,11 @@ class DeepContextEngine:
         return final_docs[:k]
 
     def _create_vector_db(self):
-        """Create a fresh Chroma handle against the persistent collection."""
-        fresh_client = chromadb.PersistentClient(
-            path=self.db_path,
+        """Create a Chroma handle backed by the shared Chroma HTTP server."""
+        fresh_client = chromadb.HttpClient(
+            host=self.chroma_host,
+            port=self.chroma_port,
+            ssl=self.chroma_ssl,
             settings=Settings(
                 anonymized_telemetry=False,
                 chroma_product_telemetry_impl="rag_engine.NoOpProductTelemetry",
@@ -677,15 +682,15 @@ class DeepContextEngine:
         )
 
     def _reload_vector_db(self):
-        """Refresh the collection handle so cross-process writes become visible."""
+        """Recreate the HTTP-backed Chroma handle."""
         self.vector_db = self._create_vector_db()
         return self.vector_db
 
-    def _fetch_diagram_docs_for_sources(self, vector_db, user_dept: str, source_names: set[str]) -> List[Document]:
+    def _fetch_diagram_docs_for_sources(self, vector_db, source_names: set[str]) -> List[Document]:
         if not source_names:
             return []
 
-        snapshot = vector_db.get(where={"department": user_dept})
+        snapshot = vector_db.get()
         documents = snapshot.get("documents", [])
         metadatas = snapshot.get("metadatas", [])
 
@@ -709,6 +714,9 @@ class DeepContextEngine:
         reader.embeddings = self.embeddings
         reader.db_path = self.db_path
         reader.collection_name = self.collection_name
+        reader.chroma_host = self.chroma_host
+        reader.chroma_port = self.chroma_port
+        reader.chroma_ssl = self.chroma_ssl
         reader.llm = self.llm
         reader.vector_db = reader._create_vector_db()
         return reader
@@ -767,7 +775,7 @@ class DeepContextEngine:
             print(f"⚠️ Contextualize step failed ({e}), falling back to original question.")
             return user_question
 
-    def get_answer(self, user_question: str, user_dept: str, chat_history: List = None):
+    def get_answer(self, user_question: str, chat_history: List = None):
         small_talk_intent = _detect_small_talk_intent(user_question)
         if small_talk_intent:
             return {
@@ -781,7 +789,7 @@ class DeepContextEngine:
         # Step 1: Reload Chroma to pick up freshly ingested docs
         vector_db = self.get_vector_db(refresh=True)
 
-        visible_snapshot = vector_db.get(where={"department": user_dept})
+        visible_snapshot = vector_db.get()
         visible_count = len(visible_snapshot.get("documents", []))
         visible_sources = sorted({
             metadata.get("source_name")
@@ -789,14 +797,14 @@ class DeepContextEngine:
             if isinstance(metadata, dict) and metadata.get("source_name")
         })
         print(
-            f"🔎 Retrieval snapshot | dept={user_dept} | docs_visible={visible_count} | "
+            f"🔎 Retrieval snapshot | docs_visible={visible_count} | "
             f"sources_visible={visible_sources[:10]} | question={user_question[:120]!r}"
         )
 
         # Step 2: Convert raw history tuples → LangChain messages (filter garbage)
         safe_history = self._normalize_chat_history(chat_history)
 
-        valid_docs = self._hybrid_search(user_question,user_dept,k=5)
+        valid_docs = self._hybrid_search(user_question, k=5)
 
         if not valid_docs:
             return {
@@ -845,7 +853,7 @@ class DeepContextEngine:
                 for doc in valid_docs
                 if (getattr(doc, "metadata", {}) or {}).get("source_name")
             }
-            diagram_docs = self._fetch_diagram_docs_for_sources(vector_db, user_dept, source_names)
+            diagram_docs = self._fetch_diagram_docs_for_sources(vector_db, source_names)
             diagrams = _filter_diagrams_by_type(
                 extract_diagrams_from_docs(diagram_docs),
                 requested_diagram_type,
