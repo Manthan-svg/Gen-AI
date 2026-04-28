@@ -252,12 +252,13 @@ class DataIngestor:
             diagram_docs = self._build_diagram_docs(final_docs, file_name, ext, upload_time)
             chunks = self.spliters.split_documents(final_docs)
 
-            for chunk in chunks:
+            for idx, chunk in enumerate(chunks, start=1):
                 chunk.metadata["source_name"] = file_name
                 chunk.metadata["file_path"] = filePath
                 chunk.metadata["ingested_at"] = upload_time
                 chunk.metadata["status"] = "pending"
                 chunk.metadata["version"] = 1.0
+                chunk.metadata["chunk_index"] = idx
                 chunk.metadata = self._sanitize_metadata(chunk.metadata)
 
             for diagram_doc in diagram_docs:

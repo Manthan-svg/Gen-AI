@@ -635,10 +635,18 @@ class DeepContextEngine:
         RRF_K      = 60          # standard constant
         rrf_scores = {}           # doc_key → cumulative RRF score
         doc_store  = {}           # doc_key → Document object
+        source_docs = {}          # source_name → list[Document]
+
+        def _doc_key(doc: Document, fallback_text: str | None = None) -> str:
+            meta = getattr(doc, "metadata", {}) or {}
+            source_name = meta.get("source_name") or meta.get("source") or "unknown"
+            chunk_index = meta.get("chunk_index")
+            preview = (fallback_text if fallback_text is not None else doc.page_content)[:120]
+            return f"{source_name}::{chunk_index if chunk_index is not None else 'na'}::{preview}"
 
         # Semantic results contribute to RRF
         for rank, (doc, _) in enumerate(semantic_docs):
-            key = doc.page_content[:120]      # stable unique key per chunk
+            key = _doc_key(doc)
             rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (RRF_K + rank + 1)
             doc_store[key]  = doc
 
@@ -648,7 +656,7 @@ class DeepContextEngine:
                 continue
             text = all_texts[idx]
             meta = all_metadatas[idx] if idx < len(all_metadatas) else {}
-            key  = text[:120]
+            key  = _doc_key(Document(page_content=text, metadata=meta), fallback_text=text)
             rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (RRF_K + rank + 1)
             if key not in doc_store:
                 doc_store[key] = Document(page_content=text, metadata=meta)
@@ -656,6 +664,45 @@ class DeepContextEngine:
         # ── 6. Sort by RRF score descending, return top-k ────────────────
         ranked_keys = sorted(rrf_scores, key=lambda x: rrf_scores[x], reverse=True)
         final_docs  = [doc_store[key] for key in ranked_keys if key in doc_store]
+
+        # If the top hit comes from a multi-chunk source, bring in sibling chunks
+        # from the same source so the answer model sees the full document context.
+        if final_docs:
+            top_source = (getattr(final_docs[0], "metadata", {}) or {}).get("source_name")
+            if top_source:
+                for text, meta in zip(all_texts, all_metadatas):
+                    if not isinstance(meta, dict):
+                        continue
+                    if meta.get("source_name") != top_source:
+                        continue
+                    doc = Document(page_content=text, metadata=meta)
+                    source_docs.setdefault(top_source, []).append(doc)
+
+                if top_source in source_docs:
+                    source_docs[top_source].sort(
+                        key=lambda d: (
+                            getattr(d, "metadata", {}) or {}).get("chunk_index") or 0
+                    )
+
+                    expanded_docs = []
+                    seen_keys = set()
+                    for doc in source_docs[top_source][:3]:
+                        key = _doc_key(doc)
+                        if key in seen_keys:
+                            continue
+                        expanded_docs.append(doc)
+                        seen_keys.add(key)
+
+                    for doc in final_docs:
+                        key = _doc_key(doc)
+                        if key in seen_keys:
+                            continue
+                        expanded_docs.append(doc)
+                        seen_keys.add(key)
+                        if len(expanded_docs) >= k:
+                            break
+
+                    final_docs = expanded_docs[:k]
 
         # print(f"✅ Hybrid search → {len(semantic_docs)} semantic + "
         #     f"{sum(1 for i in top_bm25_idx if bm25_scores[i] > 0)} BM25 "
@@ -751,8 +798,7 @@ class DeepContextEngine:
             "3. Do not answer using facts from chat history."
             "4. Do not add prefixes, quotes, explanations, or markdown."
             "5. If the latest user turn is already standalone, return it as a single clean question."
-
-        )
+        )   
 
         contextualize_q_prompt = ChatPromptTemplate.from_messages([
             ("system", contextualize_q_system_prompt),
@@ -792,7 +838,7 @@ class DeepContextEngine:
                 "retrieved": False,
                 "intent": small_talk_intent,
                 "citations": [],
-                "diagrams":[]
+                "diagrams":[] 
             }
 
         # Step 1: Reload Chroma to pick up freshly ingested docs
@@ -898,23 +944,23 @@ class DeepContextEngine:
         # Step 6: Answer using ONLY the retrieved docs — no chat history here
         system_prompt = (
             "You are a Corporate Knowledge Assistant. Your ONLY job is to answer the user's "
-            "question using the CONTEXT block below.\n\n"
+            "question using the provided context block below.\n\n"
             "STRICT RULES:\n"
-            "1. Read the entire CONTEXT carefully before answering.\n"
-            "2. If the answer IS present in the CONTEXT — answer it directly and completely."
-            "Do NOT say 'I don't know' if the information exists in the CONTEXT.\n"
-            "3. Only say you don't know if the CONTEXT genuinely has no relevant information "
+            "1. Read the entire provided context carefully before answering. Make sure to read the context block below.\n"
+            "2. If the answer IS present in the provided context — answer it directly and completely."
+            "Do NOT say 'I don't know' if the information exists in the provided context.\n"
+            "3. Only say you don't know if the provided context genuinely has no relevant information "
             "after careful reading.\n"
             "4. For list-type questions (participants, members, action items, decisions), "
-            "extract and list every item found in the CONTEXT.\n"
-            "5. Do not fabricate anything not in the CONTEXT.\n"
+            "extract and list every item found in the provided context.\n"
+            "5. Do not fabricate anything not in the provided context.\n"
             "6. Format the answer as clean markdown when it improves readability.\n"
             "7. Use bullet points or numbered lists for multi-item answers.\n"
             "8. Use markdown tables only when the source information is naturally tabular.\n"
             "9. Use fenced code blocks for commands, code, or structured snippets.\n"
             "10. Do not use raw HTML.\n"
             "11. Keep simple answers as short plain paragraphs without unnecessary headings.\n\n"
-            "CONTEXT:\n{context}"
+            "provided context:\n{context}"
         )
 
         prompt = ChatPromptTemplate.from_messages([
