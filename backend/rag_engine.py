@@ -553,9 +553,12 @@ def _detect_small_talk_intent(text: str) -> str | None:
 
 class DeepContextEngine:
     def __init__(self):
+        # Allow the model to download into the shared cache on first boot, then
+        # optionally switch back to cache-only mode for offline runs.
+        self.hf_local_files_only = os.getenv("HUGGINGFACE_LOCAL_FILES_ONLY", "false").lower() == "true"
         self.embeddings = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-MiniLM-L6-v2",
-            model_kwargs={"device": "cpu", "local_files_only": True},
+            model_kwargs={"device": "cpu", "local_files_only": self.hf_local_files_only},
             encode_kwargs={"normalize_embeddings": False},
             cache_folder=os.path.expanduser("~/.cache/huggingface/hub"),
         )

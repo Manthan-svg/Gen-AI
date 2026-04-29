@@ -8,8 +8,8 @@ DATA_DIR = os.path.join(BACKEND_DIR, "data")
 
 app = Celery(
     "deepcontext_worker",
-    broker="redis://localhost:6379/0",
-    backend="redis://localhost:6379/0",
+    broker=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+    backend=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
 )
 
 app.conf.update(

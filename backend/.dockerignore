@@ -1,0 +1,13 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.git
+.vscode
+.idea
+.venv
+venv
+data
+chroma_db
+*.log
+.env

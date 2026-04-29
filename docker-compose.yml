@@ -1,0 +1,83 @@
+services:
+
+  # ── Redis ──────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: deepcontext_redis
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  # ── ChromaDB HTTP Server ────────────────────────────────
+  chromadb:
+    image: chromadb/chroma:0.5.23
+    container_name: deepcontext_chroma
+    volumes:
+      - chroma_data:/data
+    environment:
+      - ANONYMIZED_TELEMETRY=false
+    restart: unless-stopped
+
+  # ── FastAPI Backend ─────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: deepcontext_backend
+    env_file:
+      - ./backend/.env
+    ports:
+      - "2020:2020"
+    volumes:
+      - ./backend/data:/app/data
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8000
+      - CHROMA_COLLECTION_NAME=deepcontext_v2
+      - REDIS_URL=redis://redis:6379/0
+      - HUGGINGFACE_LOCAL_FILES_ONLY=false
+    depends_on:
+      - redis
+      - chromadb
+    restart: unless-stopped
+
+  # ── Celery Worker ───────────────────────────────────────
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: deepcontext_celery
+    env_file:
+      - ./backend/.env
+    command: celery -A celery_worker.app worker --loglevel=info
+    volumes:
+      - ./backend/data:/app/data
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8000
+      - CHROMA_COLLECTION_NAME=deepcontext_v2
+      - REDIS_URL=redis://redis:6379/0
+      - HUGGINGFACE_LOCAL_FILES_ONLY=false
+    depends_on:
+      - redis
+      - chromadb
+      - backend
+    restart: unless-stopped
+
+  # ── React Frontend ──────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: deepcontext_frontend
+    ports:
+      - "5173:5173"
+    restart: unless-stopped
+
+# ── Named Volumes (persistent data survives container restarts) ──
+volumes:
+  redis_data:
+  chroma_data:
+  huggingface_cache:

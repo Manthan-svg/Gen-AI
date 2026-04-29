@@ -24,12 +24,14 @@ app = FastAPI(title="DeepContext API")
 
 origin = [
     "http://localhost:5173",
-    "http://127.0.0.1:5173"
+    "http://127.0.0.1:5173",
+    "http://10.121.162.97:5173",
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origin,            # Allows requests from your React app
+    allow_origin_regex=r"^https?://[^/]+:5173$",
     allow_credentials=True,           # Allows cookies/auth headers
     allow_methods=["*"],              # Allows all methods (GET, POST, etc.)
     allow_headers=["*"],              # Allows all headers
