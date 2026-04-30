@@ -586,7 +586,7 @@ class DeepContextEngine:
                 "retrieved": False,
                 "diagrams":[]
             }
-        print(valid_docs)
+            
         
         """  
             Diagram Detection Logic
@@ -604,8 +604,6 @@ class DeepContextEngine:
             for doc in valid_docs[:5]
         ]
         print(f"🔎 Top retrieved docs | {top_retrieval_preview}")
-        
-        # print(valid_docs)
         
 
         # Step 5: Get standalone question (safe, with fallback)

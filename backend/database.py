@@ -38,6 +38,9 @@ def initDB():
         ''')
         
         
+        
+        
+        
 
         conn.commit()
         conn.close()

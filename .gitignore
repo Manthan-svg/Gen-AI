@@ -37,6 +37,7 @@ pnpm-debug.log*
 dist/
 build/
 
+
 # Databases / Artifacts
 chroma_db/
 users.db
