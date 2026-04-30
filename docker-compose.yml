@@ -74,6 +74,8 @@ services:
     container_name: deepcontext_frontend
     ports:
       - "5173:5173"
+    environment:
+      - VITE_API_BASE_URL=http://10.121.162.97:2020
     restart: unless-stopped
 
 # ── Named Volumes (persistent data survives container restarts) ──

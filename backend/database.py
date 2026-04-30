@@ -15,15 +15,13 @@ def initDB():
                 session_id TEXT,
                 role TEXT,
                 content TEXT,
-                citations TEXT,
+                diagrams TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )            
         ''')
 
         cursor.execute("PRAGMA table_info(chat_history)")
         columns = {row[1] for row in cursor.fetchall()}
-        if "citations" not in columns:
-            cursor.execute("ALTER TABLE chat_history ADD COLUMN citations TEXT")
         if "diagrams" not in columns:
             cursor.execute("ALTER TABLE chat_history ADD COLUMN diagrams TEXT")
 

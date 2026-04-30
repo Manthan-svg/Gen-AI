@@ -65,11 +65,11 @@ function MermaidDiagram({ code, title }) {
       <>
         {/* Inline preview */}
         <div
-          className="relative group cursor-pointer overflow-x-auto"
+          className="relative group cursor-pointer overflow-hidden rounded-lg border border-slate-700/70 bg-slate-950/40 p-2"
           onClick={() => setFullscreen(true)}
         >
           <div
-            className="pointer-events-none w-full"
+            className="custom-scrollbar pointer-events-none max-h-[420px] w-full overflow-auto"
             dangerouslySetInnerHTML={{ __html: svg }}
           />
           <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 rounded-lg transition flex items-center justify-center opacity-0 group-hover:opacity-100">
@@ -173,11 +173,14 @@ function PlantUMLDiagram({ imageUrl, code, title }) {
 
   return (
     <>
-      <div className="relative group cursor-pointer" onClick={() => setFullscreen(true)}>
+      <div
+        className="relative group cursor-pointer overflow-hidden rounded-lg border border-slate-700/70 bg-slate-950/40 p-2"
+        onClick={() => setFullscreen(true)}
+      >
         <img
           src={imageUrl}
           alt={title}
-          className="max-w-full rounded-lg border border-slate-700 bg-white"
+          className="custom-scrollbar max-h-[420px] w-full overflow-auto rounded-lg border border-slate-700 bg-white object-contain"
           onError={(e) => { e.target.style.display = 'none'; }}
         />
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 rounded-lg transition flex items-center justify-center opacity-0 group-hover:opacity-100">

@@ -78,8 +78,6 @@ _ASSISTANT_HELP_PHRASES = {
     "what do you do",
 }
 
-_CITATION_SKIP_PREFIXES = ("#", "|")
-
 def _is_garbage(text: str) -> bool:
     """Returns True if the standalone_q looks like LLM hallucination/garbage."""
     if not text or len(text.strip()) < 8:
@@ -148,17 +146,6 @@ def _normalize_markdown_answer(text: str) -> str:
     return "\n\n".join(part for part in cleaned_segments if part)
 
 
-def _normalize_match_text(text: str) -> str:
-    normalized = str(text or "").lower()
-    normalized = re.sub(r"\[[0-9]+\]", " ", normalized)
-    normalized = re.sub(r"[^\w\s]", " ", normalized)
-    return re.sub(r"\s+", " ", normalized).strip()
-
-
-def _tokenize_match_text(text: str) -> List[str]:
-    return [token for token in re.findall(r"[a-z0-9]+", _normalize_match_text(text)) if len(token) > 2]
-
-
 def _extract_history_item(item):
     if isinstance(item, dict):
         return item.get("role"), item.get("content")
@@ -166,280 +153,10 @@ def _extract_history_item(item):
         return item[0], item[1]
     return None, None
 
-
-def _split_source_spans(text: str) -> List[str]:
-    spans = []
-    for piece in re.split(r"\n+|(?<=[.!?])\s+", str(text or "")):
-        cleaned = piece.strip()
-        if len(cleaned) >= 20:
-            spans.append(cleaned)
-    if not spans and str(text or "").strip():
-        spans.append(str(text).strip())
-    return spans
-
-
-def _cosine_similarity(a: list, b: list) -> float:
-    a, b = np.array(a), np.array(b)
-    denom = (np.linalg.norm(a) * np.linalg.norm(b))
-    if denom == 0:
-        return 0.0
-    return float(np.dot(a, b) / denom)
-
-
-def _find_claim_citation(
-    claim_text: str,
-    docs: List[Document],
-    citation_index: int,
-    chunk_embeddings: list | None = None,   # NEW: pre-computed embeddings
-    embed_fn=None,                           # NEW: embedding callable
-):
-    """
-    Two-level citation:
-      Level 1 — semantic similarity via embeddings (handles paraphrase).
-      Level 2 — exact / token-overlap text match (fast, kept as secondary).
-    Returns a citation dict or None.
-    """
-    claim = str(claim_text or "").strip()
-    if len(claim) < 12:
-        return None
-
-    # ── Level 1: semantic similarity ─────────────────────────────────────────
-    SEMANTIC_THRESHOLD = 0.50   # tune: lower = more citations, higher = stricter
-
-    if embed_fn is not None and chunk_embeddings:
-        try:
-            claim_emb = embed_fn([claim])[0]
-            best_score = 0.0
-            best_doc = None
-
-            for doc, chunk_emb in zip(docs, chunk_embeddings):
-                score = _cosine_similarity(claim_emb, chunk_emb)
-                if score > best_score:
-                    best_score = score
-                    best_doc = doc
-
-            if best_score >= SEMANTIC_THRESHOLD and best_doc is not None:
-                meta = getattr(best_doc, "metadata", {}) or {}
-                # Pick best snippet via token overlap for the excerpt
-                claim_tokens = set(_tokenize_match_text(claim))
-                best_snippet = best_doc.page_content[:280]
-                best_span_score = 0
-                for span in _split_source_spans(best_doc.page_content):
-                    overlap = len(claim_tokens & set(_tokenize_match_text(span)))
-                    if overlap > best_span_score:
-                        best_span_score = overlap
-                        best_snippet = span[:280]
-
-                return {
-                    "index": citation_index,
-                    "sourceName": meta.get("source_name") or meta.get("source") or "Unknown source",
-                    "page": meta.get("page"),
-                    "snippet": best_snippet.strip(),
-                    "semanticScore": round(best_score, 3),
-                }
-        except Exception as e:
-            print(f"⚠️ Semantic citation failed: {e}")
-
-    # ── Level 2: original text-matching logic (unchanged fallback) ────────────
-    claim_tokens = set(_tokenize_match_text(claim))
-    if len(claim_tokens) < 2:
-        return None
-
-    best_match = None
-
-    for doc in docs:
-        raw_text = str(getattr(doc, "page_content", "") or "")
-        if not raw_text.strip():
-            continue
-
-        metadata = getattr(doc, "metadata", {}) or {}
-        lowered_raw = raw_text.lower()
-        lowered_claim = claim.lower()
-        exact_index = lowered_raw.find(lowered_claim)
-
-        if exact_index != -1:
-            snippet = raw_text[exact_index: exact_index + len(claim)].strip()
-            return {
-                "index": citation_index,
-                "sourceName": metadata.get("source_name") or metadata.get("source") or "Unknown source",
-                "page": metadata.get("page"),
-                "snippet": snippet,
-            }
-
-        normalized_claim = _normalize_match_text(claim)
-        if normalized_claim and normalized_claim in _normalize_match_text(raw_text):
-            return {
-                "index": citation_index,
-                "sourceName": metadata.get("source_name") or metadata.get("source") or "Unknown source",
-                "page": metadata.get("page"),
-                "snippet": claim,
-            }
-
-        for span in _split_source_spans(raw_text):
-            span_tokens = set(_tokenize_match_text(span))
-            if len(span_tokens) < 2:
-                continue
-
-            overlap = claim_tokens & span_tokens
-            overlap_ratio = len(overlap) / max(len(claim_tokens), 1)
-            if len(overlap) < min(4, len(claim_tokens)) or overlap_ratio < 0.55:  # slightly looser
-                continue
-
-            span_start = lowered_raw.find(span.lower())
-            candidate = {
-                "score": overlap_ratio,
-                "citation": {
-                    "index": citation_index,
-                    "sourceName": metadata.get("source_name") or metadata.get("source") or "Unknown source",
-                    "page": metadata.get("page"),
-                    "snippet": span[:280].strip(),
-                    "charStart": span_start if span_start != -1 else None,
-                    "charEnd": (span_start + len(span.strip())) if span_start != -1 else None,
-                }
-            }
-
-            if best_match is None or candidate["score"] > best_match["score"]:
-                best_match = candidate
-
-    return best_match["citation"] if best_match else None
-
-def _annotate_line_with_citations(
-    line: str,
-    docs: List[Document],
-    next_index: int,
-    chunk_embeddings: list | None = None,   # NEW
-    embed_fn=None,                           # NEW
-):
-    stripped = line.strip()
-    if not stripped:
-        return line, []
-
-    if stripped.startswith(_CITATION_SKIP_PREFIXES) or stripped.startswith("```") or stripped.startswith("---"):
-        return line, []
-
-    bullet_match = re.match(r"^(\s*(?:[-*+]\s+|\d+\.\s+))(.*)$", line)
-    prefix = bullet_match.group(1) if bullet_match else ""
-    body = bullet_match.group(2) if bullet_match else line
-
-    if not body.strip():
-        return line, []
-
-    parts = re.split(r"(?<=[.!?])(\s+)", body)
-    if not parts:
-        return line, []
-
-    citations = []
-    rebuilt = []
-    current_index = next_index
-
-    for idx, part in enumerate(parts):
-        if idx % 2 == 1:
-            rebuilt.append(part)
-            continue
-
-        claim = part.strip()
-        if not claim:
-            rebuilt.append(part)
-            continue
-
-        # Pass embeddings to the citation finder
-        citation = _find_claim_citation(
-            claim, docs, current_index,
-            chunk_embeddings=chunk_embeddings,
-            embed_fn=embed_fn,
-        )
-        rebuilt.append(part)
-
-        if citation:
-            citations.append(citation)
-            rebuilt.append(f" [{current_index}]")
-            current_index += 1
-
-    return prefix + "".join(rebuilt), citations
-
-def _build_answer_citations(
-    answer_text: str,
-    docs: List[Document],
-    chunk_embeddings: list | None = None,   # NEW
-    embed_fn=None,                           # NEW
-):
-    if not answer_text or not docs:
-        return answer_text, []
-
-    citations = []
-    next_index = 1
-    rebuilt_segments = []
-
-    for segment in re.split(r"(```[\s\S]*?```)", answer_text):
-        if not segment:
-            continue
-
-        if segment.startswith("```") and segment.endswith("```"):
-            rebuilt_segments.append(segment)
-            continue
-
-        annotated_lines = []
-        for line in segment.splitlines(keepends=True):
-            line_body = line.rstrip("\n")
-            newline = line[len(line_body):]
-            annotated_line, new_citations = _annotate_line_with_citations(
-                line_body, docs, next_index,
-                chunk_embeddings=chunk_embeddings,
-                embed_fn=embed_fn,
-            )
-            citations.extend(new_citations)
-            next_index += len(new_citations)
-            annotated_lines.append(annotated_line + newline)
-
-        rebuilt_segments.append("".join(annotated_lines))
-
-    annotated_answer = "".join(rebuilt_segments).strip()
-
-    # ── Guarantee: if ZERO citations matched, add doc-level fallback ──────────
-    if not citations:
-        seen = set()
-        for i, doc in enumerate(docs, start=1):
-            meta = getattr(doc, "metadata", {}) or {}
-            src = meta.get("source_name") or meta.get("source") or "Unknown source"
-            if src not in seen:
-                seen.add(src)
-                citations.append({
-                    "index": i,
-                    "sourceName": src,
-                    "page": meta.get("page"),
-                    "snippet": doc.page_content[:200].strip(),
-                    "isFallback": True,   # frontend can style differently if desired
-                })
-
-    return annotated_answer, citations
-
 def _normalize_user_text(text: str) -> str:
     lowered = str(text or "").lower().strip()
     lowered = re.sub(r"[^\w\s]", " ", lowered)
     return re.sub(r"\s+", " ", lowered).strip()
-
-
-def _build_doc_level_citations(docs: List[Document]):
-    citations = []
-    seen = set()
-
-    for index, doc in enumerate(docs, start=1):
-        meta = getattr(doc, "metadata", {}) or {}
-        source_name = meta.get("source_name") or meta.get("source") or "Unknown source"
-        page = meta.get("page")
-        snippet = meta.get("diagram_title") or str(getattr(doc, "page_content", "") or "")[:200].strip()
-        dedupe_key = (source_name, meta.get("content_type"), meta.get("diagram_index"), page)
-        if dedupe_key in seen:
-            continue
-        seen.add(dedupe_key)
-        citations.append({
-            "index": len(citations) + 1,
-            "sourceName": source_name,
-            "page": page,
-            "snippet": snippet,
-        })
-
-    return citations
 
 
 def _merge_diagram_request_type(raw_type, standalone_type):
@@ -840,7 +557,6 @@ class DeepContextEngine:
                 "answer": _SMALL_TALK_RESPONSES[small_talk_intent],
                 "retrieved": False,
                 "intent": small_talk_intent,
-                "citations": [],
                 "diagrams":[] 
             }
 
@@ -868,7 +584,6 @@ class DeepContextEngine:
             return {
                 "answer": "I'm sorry, I couldn't find any relevant information in the documents for your question.",
                 "retrieved": False,
-                "citations": [],
                 "diagrams":[]
             }
         print(valid_docs)
@@ -927,7 +642,6 @@ class DeepContextEngine:
             return {
                 "answer": "",
                 "retrieved": True,
-                "citations": _build_doc_level_citations(diagram_docs or valid_docs),
                 "diagrams": diagrams,
             }
 
@@ -940,7 +654,6 @@ class DeepContextEngine:
             return {
                 "answer": f"I couldn't find a {diagram_type_label} in the retrieved documents for this question.",
                 "retrieved": True,
-                "citations": _build_doc_level_citations(valid_docs),
                 "diagrams": [],
             }
 
@@ -1001,30 +714,8 @@ class DeepContextEngine:
             answer_text = candidate  # keep last attempt as fallback
 
 
-        chunk_embeddings = None
-        try:
-            texts = [doc.page_content[:512] for doc in valid_docs]   # truncate for speed
-            chunk_embeddings = self.embeddings.embed_documents(texts)
-        except Exception as e:
-            print(f"⚠️ Could not pre-compute chunk embeddings for citation: {e}")
-
-        # Embedding callable for claim-level queries
-        embed_fn = None
-        try:
-            embed_fn = self.embeddings.embed_documents   # same model, list → list of vectors
-        except Exception:
-            pass
-
-        annotated_answer, citations = _build_answer_citations(
-            answer_text,
-            valid_docs,
-            chunk_embeddings=chunk_embeddings,
-            embed_fn=embed_fn,
-        )
-
         return {
-            "answer": annotated_answer,
+            "answer": answer_text,
             "retrieved": True,
-            "citations": citations,
             "diagrams":diagrams
         }

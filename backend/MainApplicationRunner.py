@@ -225,7 +225,6 @@ def get_answer(question: UserRequest):
     result = engine.get_answer(question.question, history)
 
     answer_text = result["answer"]
-    citations = result.get("citations", [])
     diagrams = result.get("diagrams",[])
     was_retrieved = result.get("retrieved", True)
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
@@ -245,7 +244,7 @@ def get_answer(question: UserRequest):
     is_bad_answer = any(phrase in answer_lower for phrase in _SAVE_SKIP_PHRASES)
 
     if not (is_bad_answer and was_retrieved):
-        history_manager.save_messages(question.sessionId, "ai", answer_text, citations=citations,diagrams=diagrams)
+        history_manager.save_messages(question.sessionId, "ai", answer_text, diagrams=diagrams)
         session_manager.update_session(
             username,
             question.sessionId,
@@ -257,7 +256,6 @@ def get_answer(question: UserRequest):
 
     return {
         "answer": answer_text,
-        "citations": citations,
         "diagrams":diagrams
     }
      

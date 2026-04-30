@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import ChatWindow from './components/ChatWindow';
-import { Shield, CheckCircle2, LogOut, Trash2, Loader2 } from 'lucide-react'
+import { Shield, CheckCircle2, RefreshCw, Trash2, Loader2 } from 'lucide-react'
 import api from './utils/api.util';
 
 
@@ -96,8 +96,13 @@ function App() {
           </div>
         </div>
 
-        <button onClick={() => window.location.reload()} className="p-4 border-t border-slate-700 flex items-center gap-2 text-slate-400 hover:text-white transition">
-          <LogOut size={16} /> <span className="text-xs">Refresh</span>
+        <button
+          onClick={() => window.location.reload()}
+          className="p-4 border-t border-slate-700 flex items-center gap-2 text-slate-400 hover:text-white transition"
+          type="button"
+          title="Refresh documents and chat UI"
+        >
+          <RefreshCw size={16} /> <span className="text-xs">Refresh</span>
         </button>
       </aside>
 
